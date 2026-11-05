@@ -99,3 +99,12 @@ def test_scanner_covers_new_messages_only(db):
     enqueue(db, [event(conv="c2", text="SSN 123-45-6789")])
     process_batch(db, "w")
     assert scan(lag_seconds=0) == (1, 1)
+
+
+def test_tenant_only_gets_channels_it_pays_for(db):
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
+        conn.execute("UPDATE tenants SET channels = '{chat}' WHERE id = 'a'")
+    enqueue(db, [event(channel="chat"), event(conv="c2", channel="voice")])
+    process_batch(db, "w")
+    assert admin("SELECT channel FROM messages") == [("chat",)]
+    assert admin("SELECT reason FROM dead_letters") == [("channel_not_entitled",)]

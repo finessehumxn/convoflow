@@ -10,7 +10,9 @@ GRANT USAGE ON SCHEMA public TO app;
 
 CREATE TABLE tenants (
   id text PRIMARY KEY,
-  daily_limit bigint NOT NULL
+  daily_limit bigint NOT NULL,
+  channels text[] NOT NULL DEFAULT '{voice,chat,email,sms}',
+  api_key_hash text UNIQUE
 );
 
 CREATE TABLE tenant_usage (
@@ -32,6 +34,7 @@ CREATE TABLE messages (
   conversation_id text NOT NULL,
   channel text NOT NULL,
   text text NOT NULL,
+  trace_id text,
   enqueued_at timestamptz NOT NULL,
   ingested_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (tenant_id, event_key)
@@ -86,3 +89,4 @@ GRANT SELECT ON tenants TO app;
 GRANT SELECT, INSERT, UPDATE ON tenant_usage, worker_counters TO app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON inbox TO app;
 GRANT SELECT, INSERT ON messages, dead_letters TO app;
+GRANT SELECT ON scan_runs TO app;

@@ -14,8 +14,8 @@ from datetime import date
 
 import psycopg
 
-ADMIN_DSN = "host=127.0.0.1 port=54329 dbname=convoflow user=convoflow"
-APP_DSN = "host=127.0.0.1 port=54329 dbname=convoflow user=app"
+ADMIN_DSN = os.environ.get("CONVOFLOW_ADMIN_DSN", "host=127.0.0.1 port=54329 dbname=convoflow_dev user=convoflow")
+APP_DSN = os.environ.get("CONVOFLOW_APP_DSN", "host=127.0.0.1 port=54329 dbname=convoflow_dev user=app")
 CHANNELS = ("voice", "chat", "email", "sms")
 REQUIRED = ("tenant_id", "conversation_id", "channel", "text")
 BATCH_SIZE = 500
@@ -30,6 +30,9 @@ RULES = (
 
 
 def reset():
+    """Drops everything. Refuses to run anywhere but a local database."""
+    if "host=127.0.0.1" not in ADMIN_DSN:
+        raise RuntimeError("reset is only allowed on a local database")
     with psycopg.connect(ADMIN_DSN, autocommit=True) as db:
         db.execute(open(os.path.join(os.path.dirname(__file__), "schema.sql")).read())
 
@@ -37,7 +40,7 @@ def reset():
 def add_tenants(limits):
     with psycopg.connect(ADMIN_DSN, autocommit=True) as db:
         with db.cursor() as cur:
-            cur.executemany("INSERT INTO tenants VALUES (%s, %s)", list(limits.items()))
+            cur.executemany("INSERT INTO tenants (id, daily_limit) VALUES (%s, %s)", list(limits.items()))
 
 
 def enqueue(db, payloads):
@@ -68,12 +71,14 @@ def event_key(e):
 
 
 def store_for_tenant(cur, tenant_id, rows):
-    """Returns (stored, duplicates, rows over quota). Caller locks tenants in sorted order."""
+    """Returns (stored, duplicates, rows over quota, blocked rows, reason). Caller locks tenants in sorted order."""
     today = date.today()
-    cur.execute("SELECT daily_limit FROM tenants WHERE id = %s", (tenant_id,))
+    cur.execute("SELECT daily_limit, channels FROM tenants WHERE id = %s", (tenant_id,))
     tenant = cur.fetchone()
     if tenant is None:
-        return 0, 0, rows, "unknown_tenant"
+        return 0, 0, rows, {}, "unknown_tenant"
+    blocked = [r for r in rows if r[3] not in tenant[1]]
+    rows = [r for r in rows if r[3] in tenant[1]]
     cur.execute(
         "INSERT INTO tenant_usage (tenant_id, day) VALUES (%s, %s) ON CONFLICT DO NOTHING",
         (tenant_id, today),
@@ -86,17 +91,17 @@ def store_for_tenant(cur, tenant_id, rows):
     allowed, over = rows[:room], rows[room:]
     cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
     cur.execute(
-        """INSERT INTO messages (tenant_id, event_key, conversation_id, channel, text, enqueued_at)
-           SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[], %s::text[], %s::timestamptz[])
+        """INSERT INTO messages (tenant_id, event_key, conversation_id, channel, text, enqueued_at, trace_id)
+           SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[], %s::text[], %s::timestamptz[], %s::text[])
            ON CONFLICT DO NOTHING""",
-        [list(c) for c in zip(*allowed)] if allowed else [[], [], [], [], [], []],
+        [list(c) for c in zip(*allowed)] if allowed else [[], [], [], [], [], [], []],
     )
     stored = cur.rowcount
     cur.execute(
         "UPDATE tenant_usage SET stored = stored + %s WHERE tenant_id = %s AND day = %s",
         (stored, tenant_id, today),
     )
-    return stored, len(allowed) - stored, over, "over_quota"
+    return stored, len(allowed) - stored, over, blocked, "over_quota"
 
 
 def process_batch(db, worker_id, before_commit=None):
@@ -120,14 +125,15 @@ def process_batch(db, worker_id, before_commit=None):
             else:
                 by_tenant.setdefault(e["tenant_id"], []).append((
                     e["tenant_id"], event_key(e), e["conversation_id"],
-                    e["channel"], e["text"], enqueued_at,
+                    e["channel"], e["text"], enqueued_at, e.get("trace_id"),
                 ))
         stored = duplicates = 0
         for tenant_id in sorted(by_tenant):
-            s, d, over, reason = store_for_tenant(cur, tenant_id, by_tenant[tenant_id])
+            s, d, over, blocked, reason = store_for_tenant(cur, tenant_id, by_tenant[tenant_id])
             stored += s
             duplicates += d
             dead += [(json.dumps({"tenant_id": r[0], "conversation_id": r[2]}), reason) for r in over]
+            dead += [(json.dumps({"tenant_id": r[0], "conversation_id": r[2]}), "channel_not_entitled") for r in blocked]
         if dead:
             cur.executemany("INSERT INTO dead_letters (payload, reason) VALUES (%s, %s)", dead)
         cur.execute(
