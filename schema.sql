@@ -24,9 +24,11 @@ CREATE TABLE tenant_usage (
 
 CREATE TABLE inbox (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tenant_hint text NOT NULL DEFAULT '',
   payload text NOT NULL,
   enqueued_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
+CREATE INDEX inbox_by_tenant ON inbox (tenant_hint, id);
 
 CREATE TABLE messages (
   tenant_id text NOT NULL,

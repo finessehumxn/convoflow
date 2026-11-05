@@ -26,6 +26,15 @@ Multi-tenant conversation ingestion on Postgres, with an hourly compliance scann
 
 Traffic is simulated and runs on one laptop. `results/` holds each run's audit.
 
+Noisy neighbor, one run each with 300,000 items queued by one tenant and 300 arriving from another (`noisy.py`):
+
+| Claiming | Quiet tenant p50 | Quiet tenant p95 |
+| --- | --- | --- |
+| Oldest first | 3.77s | 4.65s |
+| Fair share | 0.03s | 0.05s |
+
+Fair claiming costs throughput: the 1M burst fell from about 47,800 items a second to about 40,800.
+
 ## Not done yet
 
 - `terraform apply` has never been run, so nothing exists on AWS.
@@ -33,4 +42,4 @@ Traffic is simulated and runs on one laptop. `results/` holds each run's audit.
 - CI has never run, because the repo has no GitHub remote.
 - Before first deploy, apply `schema.sql` by hand without its `DROP SCHEMA` line, then set the `app` role password to the value in the app DSN secret.
 - API traffic reaches tasks directly. A load balancer with TLS is required before real customers.
-- Everything runs on one Postgres. Per-tenant latency under a noisy neighbor has not been measured.
+- Everything runs on one Postgres, so this has not been tested across machines.

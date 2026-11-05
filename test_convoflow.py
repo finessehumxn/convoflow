@@ -108,3 +108,10 @@ def test_tenant_only_gets_channels_it_pays_for(db):
     process_batch(db, "w")
     assert admin("SELECT channel FROM messages") == [("chat",)]
     assert admin("SELECT reason FROM dead_letters") == [("channel_not_entitled",)]
+
+
+def test_quiet_tenant_is_served_ahead_of_a_backlog(db):
+    enqueue(db, [event("a", f"c{i}") for i in range(1000)])
+    enqueue(db, [event("b", "late")])
+    process_batch(db, "w")
+    assert admin("SELECT count(*) FROM messages WHERE tenant_id = 'b'") == [(1,)]

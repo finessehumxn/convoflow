@@ -20,6 +20,8 @@ CHANNELS = ("voice", "chat", "email", "sms")
 REQUIRED = ("tenant_id", "conversation_id", "channel", "text")
 BATCH_SIZE = 500
 SCAN_LAG_SECONDS = 60
+FAIR_SHARE = 50
+FAIR_CLAIMS = os.environ.get("CONVOFLOW_FAIR", "1") == "1"
 
 # Rules run in the database so a scan never pulls messages into Python.
 RULES = (
@@ -44,10 +46,16 @@ def add_tenants(limits):
 
 
 def enqueue(db, payloads):
-    with db.cursor() as cur, cur.copy("COPY inbox (payload) FROM STDIN") as copy:
+    with db.cursor() as cur, cur.copy("COPY inbox (tenant_hint, payload) FROM STDIN") as copy:
         for payload in payloads:
-            copy.write_row((payload,))
+            copy.write_row((tenant_hint(payload), payload))
     db.commit()
+
+
+def tenant_hint(raw):
+    """Routing only. A wrong hint changes the order, never the tenant a row is stored under."""
+    e, reason = parse(raw)
+    return "" if reason else str(e["tenant_id"])
 
 
 def parse(raw):
@@ -104,16 +112,34 @@ def store_for_tenant(cur, tenant_id, rows):
     return stored, len(allowed) - stored, over, blocked, "over_quota"
 
 
-def process_batch(db, worker_id, before_commit=None):
-    """Claims and stores one batch in a single transaction. Returns rows claimed."""
-    with db.cursor() as cur:
+def claim(cur):
+    """Takes a fair share from every tenant first, then fills the batch oldest-first."""
+    claimed = []
+    if FAIR_CLAIMS:
+        cur.execute(
+            """DELETE FROM inbox WHERE id IN (
+                   SELECT i.id FROM (SELECT id FROM tenants UNION ALL SELECT '') t,
+                   LATERAL (SELECT id FROM inbox WHERE tenant_hint = t.id
+                            ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED) i
+               ) RETURNING payload, enqueued_at""",
+            (FAIR_SHARE,),
+        )
+        claimed = cur.fetchall()
+    if len(claimed) < BATCH_SIZE:
         cur.execute(
             """DELETE FROM inbox WHERE id IN (
                    SELECT id FROM inbox ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED
                ) RETURNING payload, enqueued_at""",
-            (BATCH_SIZE,),
+            (BATCH_SIZE - len(claimed),),
         )
-        claimed = cur.fetchall()
+        claimed += cur.fetchall()
+    return claimed
+
+
+def process_batch(db, worker_id, before_commit=None):
+    """Claims and stores one batch in a single transaction. Returns rows claimed."""
+    with db.cursor() as cur:
+        claimed = claim(cur)
         if not claimed:
             db.rollback()
             return 0
