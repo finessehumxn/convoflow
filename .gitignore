@@ -1,3 +1,5 @@
 convoflow.db*
 __pycache__/
 .pytest_cache/
+.pg/
+.venv/
