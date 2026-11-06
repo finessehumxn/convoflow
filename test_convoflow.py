@@ -3,7 +3,7 @@ import json
 import psycopg
 import pytest
 
-from convoflow import ADMIN_DSN, APP_DSN, add_tenants, enqueue, process_batch, reset, scan
+from convoflow import ADMIN_DSN, APP_DSN, add_tenants, enqueue, process_batch, replay, reset, scan
 
 
 def event(tenant="a", conv="c1", text="hello", channel="chat"):
@@ -115,3 +115,41 @@ def test_quiet_tenant_is_served_ahead_of_a_backlog(db):
     enqueue(db, [event("b", "late")])
     process_batch(db, "w")
     assert admin("SELECT count(*) FROM messages WHERE tenant_id = 'b'") == [(1,)]
+
+
+def test_held_back_rows_keep_their_full_payload_and_can_be_replayed(db):
+    enqueue(db, [event("capped", f"c{i}") for i in range(5)])
+    process_batch(db, "w")
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
+        conn.execute("UPDATE tenants SET daily_limit = 100 WHERE id = 'capped'")
+    assert replay("over_quota") == 3
+    process_batch(db, "w")
+    assert admin("SELECT count(*) FROM messages WHERE tenant_id = 'capped'") == [(5,)]
+
+
+def test_a_dead_letter_is_only_replayed_once(db):
+    enqueue(db, [event("capped", f"c{i}") for i in range(3)])
+    process_batch(db, "w")
+    assert replay("over_quota") == 1
+    assert replay("over_quota") == 0
+
+
+def test_replaying_an_already_stored_event_creates_no_duplicate(db):
+    enqueue(db, [event()])
+    process_batch(db, "w")
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
+        conn.execute("INSERT INTO dead_letters (payload, reason) VALUES (%s, 'manual')", (event(),))
+    replay("manual")
+    process_batch(db, "w")
+    assert admin("SELECT count(*) FROM messages") == [(1,)]
+
+
+def test_repair_fixes_a_bad_row_and_skips_what_it_cannot_fix(db):
+    enqueue(db, [event(channel="fax"), "{not json"])
+    process_batch(db, "w")
+    fixed = replay("unknown_channel", repair=lambda p: p.replace("fax", "sms"))
+    skipped = replay("invalid_json", repair=lambda p: None)
+    process_batch(db, "w")
+    assert (fixed, skipped) == (1, 0)
+    assert admin("SELECT channel FROM messages") == [("sms",)]
+    assert admin("SELECT count(*) FROM dead_letters WHERE replayed_at IS NULL") == [(1,)]

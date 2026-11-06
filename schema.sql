@@ -57,8 +57,10 @@ CREATE TABLE dead_letters (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   payload text NOT NULL,
   reason text NOT NULL,
-  failed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+  failed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  replayed_at timestamptz
 );
+CREATE INDEX dead_letters_open ON dead_letters (reason, id) WHERE replayed_at IS NULL;
 
 CREATE TABLE worker_counters (
   worker_id text PRIMARY KEY,

@@ -6,7 +6,7 @@ Multi-tenant conversation ingestion on Postgres, with an hourly compliance scann
 - Content-hash keys per tenant make replays safe.
 - Row Level Security on `messages` keeps tenants apart, and workers connect as a non-owner role.
 - Per-tenant daily limits hold one customer back without slowing the others.
-- Bad rows go to `dead_letters` with a reason.
+- Bad rows go to `dead_letters` with a reason and their full payload. `replay(reason)` sends them back once, with an optional repair step.
 - The scanner runs on a window and stores the evidence for each finding.
 
 ## Pieces

@@ -102,7 +102,7 @@ def store_for_tenant(cur, tenant_id, rows):
         """INSERT INTO messages (tenant_id, event_key, conversation_id, channel, text, enqueued_at, trace_id)
            SELECT * FROM unnest(%s::text[], %s::text[], %s::text[], %s::text[], %s::text[], %s::timestamptz[], %s::text[])
            ON CONFLICT DO NOTHING""",
-        [list(c) for c in zip(*allowed)] if allowed else [[], [], [], [], [], [], []],
+        [list(c) for c in zip(*[r[:7] for r in allowed])] if allowed else [[], [], [], [], [], [], []],
     )
     stored = cur.rowcount
     cur.execute(
@@ -151,15 +151,15 @@ def process_batch(db, worker_id, before_commit=None):
             else:
                 by_tenant.setdefault(e["tenant_id"], []).append((
                     e["tenant_id"], event_key(e), e["conversation_id"],
-                    e["channel"], e["text"], enqueued_at, e.get("trace_id"),
+                    e["channel"], e["text"], enqueued_at, e.get("trace_id"), raw,
                 ))
         stored = duplicates = 0
         for tenant_id in sorted(by_tenant):
             s, d, over, blocked, reason = store_for_tenant(cur, tenant_id, by_tenant[tenant_id])
             stored += s
             duplicates += d
-            dead += [(json.dumps({"tenant_id": r[0], "conversation_id": r[2]}), reason) for r in over]
-            dead += [(json.dumps({"tenant_id": r[0], "conversation_id": r[2]}), "channel_not_entitled") for r in blocked]
+            dead += [(r[7], reason) for r in over]
+            dead += [(r[7], "channel_not_entitled") for r in blocked]
         if dead:
             cur.executemany("INSERT INTO dead_letters (payload, reason) VALUES (%s, %s)", dead)
         cur.execute(
@@ -175,6 +175,33 @@ def process_batch(db, worker_id, before_commit=None):
             before_commit()
         db.commit()
         return len(claimed)
+
+
+def replay(reason, limit=10_000, repair=None):
+    """Sends dead letters back through the queue, each row once.
+
+    repair(payload) can fix a row first and returns None to leave it alone.
+    Duplicates are safe because stored messages are keyed by content.
+    """
+    with psycopg.connect(ADMIN_DSN) as db, db.cursor() as cur:
+        cur.execute(
+            """SELECT id, payload FROM dead_letters
+               WHERE reason = %s AND replayed_at IS NULL
+               ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED""",
+            (reason, limit),
+        )
+        chosen = [(i, repair(p) if repair else p) for i, p in cur.fetchall()]
+        chosen = [(i, p) for i, p in chosen if p is not None]
+        if chosen:
+            cur.executemany(
+                "INSERT INTO inbox (tenant_hint, payload) VALUES (%s, %s)",
+                [(tenant_hint(p), p) for _, p in chosen],
+            )
+            cur.execute(
+                "UPDATE dead_letters SET replayed_at = clock_timestamp() WHERE id = ANY(%s)",
+                ([i for i, _ in chosen],),
+            )
+    return len(chosen)
 
 
 def run_worker(idle_exit=None):
