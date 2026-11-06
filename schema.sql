@@ -26,9 +26,12 @@ CREATE TABLE inbox (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   tenant_hint text NOT NULL DEFAULT '',
   payload text NOT NULL,
+  attempts int NOT NULL DEFAULT 0,
+  next_attempt_at timestamptz,
   enqueued_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX inbox_by_tenant ON inbox (tenant_hint, id);
+CREATE INDEX inbox_retries ON inbox (next_attempt_at) WHERE attempts > 0;
 
 CREATE TABLE messages (
   tenant_id text NOT NULL,

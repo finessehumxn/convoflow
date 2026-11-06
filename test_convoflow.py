@@ -3,6 +3,7 @@ import json
 import psycopg
 import pytest
 
+import convoflow
 from convoflow import ADMIN_DSN, APP_DSN, add_tenants, enqueue, process_batch, replay, reset, scan
 
 
@@ -153,3 +154,36 @@ def test_repair_fixes_a_bad_row_and_skips_what_it_cannot_fix(db):
     assert (fixed, skipped) == (1, 0)
     assert admin("SELECT channel FROM messages") == [("sms",)]
     assert admin("SELECT count(*) FROM dead_letters WHERE replayed_at IS NULL") == [(1,)]
+
+
+POISON = '{"tenant_id": "a", "conversation_id": "bad", "channel": "chat", "text": "nul \\u0000 byte"}'
+
+
+def drain(db):
+    for _ in range(50):
+        process_batch(db, "w")
+        if admin("SELECT count(*) FROM inbox") == [(0,)]:
+            return
+
+
+def test_poison_row_cannot_block_the_rows_around_it(db, monkeypatch):
+    monkeypatch.setattr(convoflow, "RETRY_BASE_SECONDS", 0)
+    enqueue(db, [event(conv="c1"), POISON, event(conv="c2")])
+    drain(db)
+    assert admin("SELECT conversation_id FROM messages ORDER BY 1") == [("c1",), ("c2",)]
+    assert admin("SELECT reason FROM dead_letters") == [("max_attempts: DataError",)]
+
+
+def test_every_item_is_counted_after_a_poison_row(db, monkeypatch):
+    monkeypatch.setattr(convoflow, "RETRY_BASE_SECONDS", 0)
+    enqueue(db, [event(conv="c1"), POISON])
+    drain(db)
+    assert admin("SELECT sum(stored), sum(dead) FROM worker_counters") == [(1, 1)]
+
+
+def test_failed_rows_wait_for_their_backoff(db, monkeypatch):
+    monkeypatch.setattr(convoflow, "RETRY_BASE_SECONDS", 3600)
+    enqueue(db, [POISON])
+    process_batch(db, "w")
+    assert process_batch(db, "w") == 0
+    assert admin("SELECT attempts FROM inbox") == [(1,)]

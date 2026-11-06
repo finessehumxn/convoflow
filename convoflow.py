@@ -21,6 +21,8 @@ REQUIRED = ("tenant_id", "conversation_id", "channel", "text")
 BATCH_SIZE = 500
 SCAN_LAG_SECONDS = 60
 FAIR_SHARE = 50
+MAX_ATTEMPTS = 3
+RETRY_BASE_SECONDS = 2
 FAIR_CLAIMS = os.environ.get("CONVOFLOW_FAIR", "1") == "1"
 
 # Rules run in the database so a scan never pulls messages into Python.
@@ -113,38 +115,84 @@ def store_for_tenant(cur, tenant_id, rows):
 
 
 def claim(cur):
-    """Takes a fair share from every tenant first, then fills the batch oldest-first."""
-    claimed = []
+    """Retries one suspect row alone if any are due. Otherwise takes a fair share
+    from every tenant, then fills the batch oldest-first."""
+    cur.execute(
+        """DELETE FROM inbox WHERE id IN (
+               SELECT id FROM inbox WHERE attempts > 0 AND next_attempt_at <= clock_timestamp()
+               ORDER BY next_attempt_at LIMIT 1 FOR UPDATE SKIP LOCKED
+           ) RETURNING id, payload, enqueued_at, attempts"""
+    )
+    claimed = cur.fetchall()
+    if claimed:
+        return claimed
     if FAIR_CLAIMS:
         cur.execute(
             """DELETE FROM inbox WHERE id IN (
                    SELECT i.id FROM (SELECT id FROM tenants UNION ALL SELECT '') t,
-                   LATERAL (SELECT id FROM inbox WHERE tenant_hint = t.id
+                   LATERAL (SELECT id FROM inbox WHERE tenant_hint = t.id AND attempts = 0
                             ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED) i
-               ) RETURNING payload, enqueued_at""",
+               ) RETURNING id, payload, enqueued_at, attempts""",
             (FAIR_SHARE,),
         )
         claimed = cur.fetchall()
     if len(claimed) < BATCH_SIZE:
         cur.execute(
             """DELETE FROM inbox WHERE id IN (
-                   SELECT id FROM inbox ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED
-               ) RETURNING payload, enqueued_at""",
+                   SELECT id FROM inbox WHERE attempts = 0 ORDER BY id LIMIT %s FOR UPDATE SKIP LOCKED
+               ) RETURNING id, payload, enqueued_at, attempts""",
             (BATCH_SIZE - len(claimed),),
         )
         claimed += cur.fetchall()
     return claimed
 
 
+def record_failure(db, worker_id, rows, err):
+    """A failed batch marks every row suspect, so each retries alone and a good row
+    can never be dead-lettered for sharing a batch with a bad one."""
+    db.rollback()
+    with db.cursor() as cur:
+        for row_id, payload, _, attempts in rows:
+            if len(rows) == 1 and attempts + 1 >= MAX_ATTEMPTS:
+                cur.execute("DELETE FROM inbox WHERE id = %s", (row_id,))
+                cur.execute(
+                    "INSERT INTO dead_letters (payload, reason) VALUES (%s, %s)",
+                    (payload.replace("\x00", ""), f"max_attempts: {type(err).__name__}"),
+                )
+                cur.execute(
+                    """INSERT INTO worker_counters (worker_id, claimed, dead) VALUES (%s, 1, 1)
+                       ON CONFLICT (worker_id) DO UPDATE SET
+                         claimed = worker_counters.claimed + 1, dead = worker_counters.dead + 1""",
+                    (worker_id,),
+                )
+                continue
+            cur.execute(
+                """UPDATE inbox SET attempts = attempts + 1,
+                       next_attempt_at = clock_timestamp() + make_interval(secs => %s)
+                   WHERE id = %s""",
+                (RETRY_BASE_SECONDS * 2 ** attempts, row_id),
+            )
+    db.commit()
+
+
 def process_batch(db, worker_id, before_commit=None):
     """Claims and stores one batch in a single transaction. Returns rows claimed."""
     with db.cursor() as cur:
         claimed = claim(cur)
-        if not claimed:
-            db.rollback()
-            return 0
+    if not claimed:
+        db.rollback()
+        return 0
+    try:
+        store_batch(db, worker_id, claimed, before_commit)
+    except (psycopg.DataError, psycopg.IntegrityError) as err:
+        record_failure(db, worker_id, claimed, err)
+    return len(claimed)
+
+
+def store_batch(db, worker_id, claimed, before_commit):
+    with db.cursor() as cur:
         by_tenant, dead = {}, []
-        for raw, enqueued_at in claimed:
+        for _, raw, enqueued_at, _ in claimed:
             e, reason = parse(raw)
             if reason:
                 dead.append((raw, reason))
@@ -174,7 +222,6 @@ def process_batch(db, worker_id, before_commit=None):
         if before_commit:
             before_commit()
         db.commit()
-        return len(claimed)
 
 
 def replay(reason, limit=10_000, repair=None):
