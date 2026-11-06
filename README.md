@@ -15,7 +15,9 @@ Multi-tenant conversation ingestion on Postgres, with an hourly compliance scann
 - `api.py`: authenticated HTTP ingest per source, plus `/health` and `/metrics` with alert rules.
 - `adapters.py`: turns each source's payload into internal events.
 - `convoflow.py`: queue, workers, tenant limits, channel entitlements and the scanner.
-- `infra/`: Terraform for ECS Fargate, RDS, Secrets Manager, the hourly schedule and alarms.
+- `jobs.py`: migrations, the hourly scan and retention purge, and the CloudWatch metrics publisher.
+- `migrations/`: versioned schema changes, each applied once.
+- `infra/`: Terraform for the network, load balancer, ECS Fargate, RDS, secrets, autoscaling, the hourly schedule, alarms and the deploy role.
 
 ## Run it
 
@@ -36,11 +38,8 @@ Noisy neighbor, one run each with 300,000 items queued by one tenant and 300 arr
 
 Fair claiming costs throughput: the 1M burst fell from about 47,800 items a second to about 40,800.
 
-## Not done yet
+## Status
 
 - `terraform apply` has never been run, so nothing exists on AWS.
-- The Docker image has never been built, because this machine has no Docker.
-- CI has never run, because the repo has no GitHub remote.
-- Before first deploy, apply `schema.sql` by hand without its `DROP SCHEMA` line, then set the `app` role password to the value in the app DSN secret.
-- API traffic reaches tasks directly. A load balancer with TLS is required before real customers.
 - Everything runs on one Postgres, so this has not been tested across machines.
+- The deploy workflow has never run. See `RUNBOOK.md`.

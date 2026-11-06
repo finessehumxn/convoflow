@@ -28,6 +28,12 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t convoflow:ci .
+      - run: docker run --rm convoflow:ci python -c "import api, jobs, adapters, convoflow"
   terraform:
     runs-on: ubuntu-latest
     steps:

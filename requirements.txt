@@ -1,2 +1,4 @@
 psycopg[binary]==3.3.8
+psycopg-pool==3.3.3
+boto3==1.43.125
 pytest==9.2.0

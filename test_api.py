@@ -64,8 +64,21 @@ def test_event_flows_from_http_to_finding_with_its_trace(base):
 def test_stale_queue_fires_an_alert(base):
     with psycopg.connect(ADMIN_DSN, autocommit=True) as db:
         db.execute("INSERT INTO inbox (payload, enqueued_at) VALUES ('{}', now() - interval '5 minutes')")
-    with psycopg.connect(ADMIN_DSN) as db:
+    with psycopg.connect(APP_DSN) as db:
         assert firing(measure(db)) == ["queue_lag_seconds"]
     with pytest.raises(urllib.error.HTTPError) as err:
-        urllib.request.urlopen(f"{base}/health")
+        urllib.request.urlopen(f"{base}/alerts")
     assert err.value.code == 503
+
+
+def test_health_stays_up_when_the_queue_is_behind(base):
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as db:
+        db.execute("INSERT INTO inbox (payload, enqueued_at) VALUES ('{}', now() - interval '5 minutes')")
+    assert urllib.request.urlopen(f"{base}/health").status == 200
+
+
+def test_api_role_cannot_read_other_tenants_messages(base):
+    with psycopg.connect(APP_DSN) as db:
+        assert db.execute("SELECT count(*) FROM messages").fetchone() == (0,)
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.execute("SELECT * FROM findings")

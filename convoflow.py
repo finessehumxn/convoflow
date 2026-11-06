@@ -7,12 +7,14 @@ import hashlib
 import json
 import os
 import random
+import signal
 import sys
 import time
 import uuid
 from datetime import date
 
 import psycopg
+from psycopg import sql
 
 ADMIN_DSN = os.environ.get("CONVOFLOW_ADMIN_DSN", "host=127.0.0.1 port=54329 dbname=convoflow_dev user=convoflow")
 APP_DSN = os.environ.get("CONVOFLOW_APP_DSN", "host=127.0.0.1 port=54329 dbname=convoflow_dev user=app")
@@ -23,6 +25,7 @@ SCAN_LAG_SECONDS = 60
 FAIR_SHARE = 50
 MAX_ATTEMPTS = 3
 RETRY_BASE_SECONDS = 2
+DEAD_LETTER_DAYS = 90
 FAIR_CLAIMS = os.environ.get("CONVOFLOW_FAIR", "1") == "1"
 
 # Rules run in the database so a scan never pulls messages into Python.
@@ -33,12 +36,37 @@ RULES = (
 )
 
 
+def log(event, **fields):
+    print(json.dumps({"event": event, **fields}, default=str), flush=True)
+
+
 def reset():
     """Drops everything. Refuses to run anywhere but a local database."""
     if "host=127.0.0.1" not in ADMIN_DSN:
         raise RuntimeError("reset is only allowed on a local database")
     with psycopg.connect(ADMIN_DSN, autocommit=True) as db:
-        db.execute(open(os.path.join(os.path.dirname(__file__), "schema.sql")).read())
+        db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    migrate()
+
+
+def migrate():
+    """Applies each file in migrations/ once, in order, in its own transaction."""
+    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migrations")
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as db:
+        db.execute("CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())")
+        db.execute("SELECT pg_advisory_lock(7342)")
+        done = {r[0] for r in db.execute("SELECT name FROM schema_migrations")}
+        for name in sorted(f for f in os.listdir(folder) if f.endswith(".sql")):
+            if name in done:
+                continue
+            with db.transaction():
+                db.execute(open(os.path.join(folder, name)).read())
+                db.execute("INSERT INTO schema_migrations (name) VALUES (%s)", (name,))
+            log("migration_applied", name=name)
+        password = os.environ.get("CONVOFLOW_APP_PASSWORD")
+        if password:
+            db.execute(sql.SQL("ALTER ROLE app PASSWORD {}").format(sql.Literal(password)))
+        db.execute("SELECT pg_advisory_unlock(7342)")
 
 
 def add_tenants(limits):
@@ -185,6 +213,7 @@ def process_batch(db, worker_id, before_commit=None):
     try:
         store_batch(db, worker_id, claimed, before_commit)
     except (psycopg.DataError, psycopg.IntegrityError) as err:
+        log("batch_failed", worker_id=worker_id, rows=len(claimed), error=type(err).__name__)
         record_failure(db, worker_id, claimed, err)
     return len(claimed)
 
@@ -251,15 +280,37 @@ def replay(reason, limit=10_000, repair=None):
     return len(chosen)
 
 
+def purge():
+    """Deletes data past each tenant's retention period, and old dead letters."""
+    with psycopg.connect(ADMIN_DSN) as db:
+        messages = db.execute(
+            """DELETE FROM messages m USING tenants t WHERE m.tenant_id = t.id
+               AND m.ingested_at < clock_timestamp() - make_interval(days => t.retention_days)"""
+        ).rowcount
+        findings = db.execute(
+            """DELETE FROM findings f USING tenants t WHERE f.tenant_id = t.id
+               AND f.found_at < clock_timestamp() - make_interval(days => t.retention_days)"""
+        ).rowcount
+        dead = db.execute(
+            "DELETE FROM dead_letters WHERE failed_at < clock_timestamp() - make_interval(days => %s)",
+            (DEAD_LETTER_DAYS,),
+        ).rowcount
+    log("purged", messages=messages, findings=findings, dead_letters=dead)
+    return messages, findings, dead
+
+
 def run_worker(idle_exit=None):
     worker_id = uuid.uuid4().hex[:8]
+    stop = []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
+    log("worker_started", worker_id=worker_id)
     idle_since = time.monotonic()
     db = psycopg.connect(APP_DSN)
-    while True:
+    while not stop:
         try:
             claimed = process_batch(db, worker_id)
         except psycopg.OperationalError as err:
-            print(f"worker {worker_id} retrying: {err}", file=sys.stderr)
+            log("worker_retrying", worker_id=worker_id, error=str(err))
             db.close()
             time.sleep(1)
             db = psycopg.connect(APP_DSN)
@@ -273,6 +324,8 @@ def run_worker(idle_exit=None):
             return
         else:
             time.sleep(0.2)
+    db.close()
+    log("worker_stopped", worker_id=worker_id)
 
 
 def scan(lag_seconds=SCAN_LAG_SECONDS):
