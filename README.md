@@ -2,6 +2,8 @@
 
 Multi-tenant conversation ingestion on Postgres, with an hourly compliance scanner.
 
+Live demo: https://api-production-0f7cc354.up.railway.app (see `/health`, `/metrics`, `/alerts`)
+
 - Workers claim inbox rows with `FOR UPDATE SKIP LOCKED` and write results in the same transaction, so a crash returns the batch to the queue.
 - Content-hash keys per tenant make replays safe.
 - Row Level Security on `messages` keeps tenants apart, and workers connect as a non-owner role.
@@ -29,6 +31,18 @@ Multi-tenant conversation ingestion on Postgres, with an hourly compliance scann
 
 Traffic is simulated and runs on one laptop. `results/` holds each run's audit.
 
+24-hour soak at 15 items a second across 20 tenants, with 3 workers killed mid-run (`results/soak-20261106T203352Z.json`):
+
+| Measure | Result |
+| --- | --- |
+| Items produced | 1,295,999 |
+| Stored / duplicates / dead letters | 1,240,513 / 25,613 / 29,873 |
+| Left in queue | 0 |
+| Planted violations found | 6,112 of 6,112 |
+| Latency p50 / p95 / p99 | 0.088s / 0.186s / 0.200s |
+| Every item accounted for | pass |
+| Capped tenant held to its limit | **fail**, the quota check leaked during the soak |
+
 Noisy neighbor, one run each with 300,000 items queued by one tenant and 300 arriving from another (`noisy.py`):
 
 | Claiming | Quiet tenant p50 | Quiet tenant p95 |
@@ -40,6 +54,8 @@ Fair claiming costs throughput: the 1M burst fell from about 47,800 items a seco
 
 ## Status
 
-- `terraform apply` has never been run, so nothing exists on AWS.
+- Live on Railway with two services: `api` and a `worker-with-scan` (`CONVOFLOW_ROLE` picks the process; ECS passes its own commands).
+- On AWS only the ECR repository and an ARM64 image exist. The full `terraform apply` has not been run.
+- The quota leak found in the soak is not fixed yet.
 - Everything runs on one Postgres, so this has not been tested across machines.
 - The deploy workflow has never run. See `RUNBOOK.md`.
