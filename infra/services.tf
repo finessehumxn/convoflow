@@ -71,8 +71,12 @@ resource "aws_ecs_task_definition" "all" {
   network_mode             = "awsvpc"
   cpu                      = 256
   memory                   = 512
-  execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+  execution_role_arn = aws_iam_role.execution.arn
+  task_role_arn      = aws_iam_role.task.arn
   container_definitions = jsonencode([{
     name         = each.key
     image        = local.image
