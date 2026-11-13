@@ -1,0 +1,79 @@
+hour 1: produced=54005 scanned=51964 findings=251
+hour 2: produced=108012 scanned=52883 findings=265
+hour 3: produced=162009 scanned=52833 findings=237
+hour 4: produced=216000 scanned=51523 findings=237
+hour 5: produced=270000 scanned=51257 findings=246
+hour 6: produced=324008 scanned=51357 findings=242
+hour 7: produced=378013 scanned=51339 findings=279
+hour 8: produced=432003 scanned=51259 findings=282
+hour 9: produced=486013 scanned=51215 findings=263
+hour 10: produced=540006 scanned=51307 findings=251
+hour 11: produced=594007 scanned=51294 findings=268
+hour 12: produced=648010 scanned=52193 findings=239
+hour 13: produced=702007 scanned=52860 findings=260
+hour 14: produced=756003 scanned=52843 findings=239
+hour 15: produced=810004 scanned=52205 findings=257
+hour 16: produced=864013 scanned=51236 findings=251
+hour 17: produced=918010 scanned=51321 findings=231
+hour 18: produced=972009 scanned=51191 findings=236
+hour 19: produced=1026007 scanned=51206 findings=260
+hour 20: produced=1080003 scanned=51213 findings=289
+hour 21: produced=1134007 scanned=51315 findings=262
+hour 22: produced=1188009 scanned=51273 findings=275
+hour 23: produced=1242012 scanned=51259 findings=254
+{
+  "produced": 1295999,
+  "claimed": 1295999,
+  "stored": 1240513,
+  "duplicates": 25613,
+  "dead": 29873,
+  "rows_in_messages": 1240513,
+  "rows_in_dead_letters": 29873,
+  "left_in_queue": 0,
+  "planted_violations": 6112,
+  "findings": 6112,
+  "scan_runs": 24,
+  "tenant_rows": {
+    "capped": 10000,
+    "t0": 544781,
+    "t1": 38031,
+    "t10": 38076,
+    "t11": 38129,
+    "t12": 37770,
+    "t13": 37955,
+    "t14": 38088,
+    "t15": 38425,
+    "t16": 37834,
+    "t17": 38462,
+    "t18": 37999,
+    "t2": 37896,
+    "t3": 38260,
+    "t4": 38491,
+    "t5": 37875,
+    "t6": 38047,
+    "t7": 38123,
+    "t8": 37993,
+    "t9": 38278
+  },
+  "over_quota": 28553,
+  "latency_seconds": {
+    "p50": 0.088,
+    "p95": 0.186,
+    "p99": 0.2,
+    "max": 0.311
+  },
+  "elapsed_seconds": 86404.9,
+  "checks": {
+    "every_item_accounted_for": true,
+    "counters_match_tables": true,
+    "queue_empty": true,
+    "all_planted_violations_found": true,
+    "capped_tenant_held_to_limit": false
+  },
+  "mode": "soak",
+  "rate": 15,
+  "hours": 24.0,
+  "workers": 4,
+  "workers_killed": 3
+}
+saved results/soak-20261106T203352Z.json
