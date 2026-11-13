@@ -67,6 +67,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if self.path == "/":
+            return self.reply(200, json.dumps({
+                "service": "convoflow",
+                "about": "Multi-tenant ingestion for voice, chat, email and SMS with dedupe, dead letters, quotas and compliance scanning",
+                "routes": {
+                    "GET /health": "database reachable",
+                    "GET /metrics": "live pipeline counters",
+                    "GET /alerts": "alerts currently firing",
+                    "POST /v1/events/{voice|chat|email|sms}": "ingest, needs X-Api-Key",
+                },
+            }, indent=2))
         if self.path == "/health":
             with get_pool().connection() as db:
                 db.execute("SELECT 1")
