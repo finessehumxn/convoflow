@@ -84,6 +84,31 @@ def test_tenant_over_daily_limit_is_held_back_without_hurting_others(db):
     assert admin("SELECT reason, count(*) FROM dead_letters GROUP BY 1") == [("over_quota", 3)]
 
 
+def test_quota_resets_each_utc_day_and_yesterday_does_not_count(db):
+    with psycopg.connect(ADMIN_DSN) as conn:
+        conn.execute("""INSERT INTO tenant_usage (tenant_id, day, stored)
+                        VALUES ('capped', (now() AT TIME ZONE 'UTC')::date - 1, 2)""")
+    enqueue(db, [event("capped", f"c{i}") for i in range(5)])
+    process_batch(db, "w")
+    assert admin("SELECT count(*) FROM messages WHERE tenant_id = 'capped'") == [(2,)]
+    assert admin("""SELECT stored FROM tenant_usage WHERE tenant_id = 'capped'
+                    AND day = (now() AT TIME ZONE 'UTC')::date""") == [(2,)]
+
+
+def test_quota_day_comes_from_the_database_not_the_worker_clock(db, monkeypatch):
+    import os, time as _time
+    monkeypatch.setenv("TZ", "Pacific/Kiritimati")
+    _time.tzset()
+    try:
+        enqueue(db, [event("capped", f"c{i}") for i in range(3)])
+        process_batch(db, "w")
+    finally:
+        monkeypatch.delenv("TZ")
+        _time.tzset()
+    assert admin("""SELECT count(*) FROM tenant_usage WHERE tenant_id = 'capped'
+                    AND day <> (now() AT TIME ZONE 'UTC')::date""") == [(0,)]
+
+
 def test_scanner_finds_violations_with_evidence_once(db):
     enqueue(db, [event(text="Your card 4111 1111 1111 1111 is on file."), event(conv="c2", text="Fine.")])
     process_batch(db, "w")

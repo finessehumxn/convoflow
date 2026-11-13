@@ -11,7 +11,6 @@ import signal
 import sys
 import time
 import uuid
-from datetime import date
 
 import psycopg
 from psycopg import sql
@@ -109,8 +108,10 @@ def event_key(e):
 
 
 def store_for_tenant(cur, tenant_id, rows):
-    """Returns (stored, duplicates, rows over quota, blocked rows, reason). Caller locks tenants in sorted order."""
-    today = date.today()
+    """Returns (stored, duplicates, rows over quota, blocked rows, reason). Caller locks tenants in sorted order.
+    The quota day is the database's UTC date, so workers in different time zones agree on it."""
+    cur.execute("SELECT (now() AT TIME ZONE 'UTC')::date")
+    today = cur.fetchone()[0]
     cur.execute("SELECT daily_limit, channels FROM tenants WHERE id = %s", (tenant_id,))
     tenant = cur.fetchone()
     if tenant is None:

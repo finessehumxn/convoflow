@@ -41,7 +41,9 @@ Traffic is simulated and runs on one laptop. `results/` holds each run's audit.
 | Planted violations found | 6,112 of 6,112 |
 | Latency p50 / p95 / p99 | 0.088s / 0.186s / 0.200s |
 | Every item accounted for | pass |
-| Capped tenant held to its limit | **fail**, the quota check leaked during the soak |
+| Capped tenant held to its limit | held: 5,000 on each of the 2 days the run crossed (10,000 total) |
+
+The soak's original check reported a failure here. The quota held. The check compared the whole run against one day's limit, and the run crossed midnight. Looking into it found a real bug: each worker took "today" from its own clock, so workers in different time zones could disagree about the quota day. The day now comes from the database in UTC, and the audit checks each day separately.
 
 Noisy neighbor, one run each with 300,000 items queued by one tenant and 300 arriving from another (`noisy.py`):
 
@@ -56,6 +58,5 @@ Fair claiming costs throughput: the 1M burst fell from about 47,800 items a seco
 
 - Live on Railway with two services: `api` and a `worker-with-scan` (`CONVOFLOW_ROLE` picks the process; ECS passes its own commands).
 - On AWS only the ECR repository and an ARM64 image exist. The full `terraform apply` has not been run.
-- The quota leak found in the soak is not fixed yet.
 - Everything runs on one Postgres, so this has not been tested across machines.
 - The deploy workflow has never run. See `RUNBOOK.md`.

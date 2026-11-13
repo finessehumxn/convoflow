@@ -51,6 +51,8 @@ def audit(db, produced, planted, started):
         "tenant_rows": dict(db.execute("SELECT tenant_id, count(*) FROM messages GROUP BY 1").fetchall()),
         "over_quota": q("SELECT count(*) FROM dead_letters WHERE reason = 'over_quota'")[0],
         "latency_seconds": {"p50": round(p50, 3), "p95": round(p95, 3), "p99": round(p99, 3), "max": round(float(worst), 3)},
+        "capped_usage_by_day": {str(d): n for d, n in db.execute(
+            "SELECT day, stored FROM tenant_usage WHERE tenant_id = 'capped' ORDER BY day").fetchall()},
         "elapsed_seconds": round(time.monotonic() - started, 1),
     }
     report["checks"] = {
@@ -58,7 +60,9 @@ def audit(db, produced, planted, started):
         "counters_match_tables": report["stored"] == report["rows_in_messages"] and report["dead"] == report["rows_in_dead_letters"],
         "queue_empty": report["left_in_queue"] == 0,
         "all_planted_violations_found": report["findings"] == report["planted_violations"],
-        "capped_tenant_held_to_limit": report["tenant_rows"].get("capped", 0) <= 5000,
+        # The limit is per UTC day, so a run that crosses midnight may store up to 5,000 per day.
+        "capped_tenant_held_to_limit": all(n <= 5000 for n in report["capped_usage_by_day"].values())
+            and sum(report["capped_usage_by_day"].values()) == report["tenant_rows"].get("capped", 0),
     }
     return report
 
