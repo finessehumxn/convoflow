@@ -1,4 +1,5 @@
 """One-off and scheduled tasks: python jobs.py migrate | hourly | monitor | issue-key TENANT [DAILY_LIMIT]"""
+import os
 import secrets
 import sys
 import time
@@ -41,9 +42,9 @@ def hourly():
     purge()
 
 
-def issue_key(tenant_id, daily_limit=1_000_000):
+def issue_key(tenant_id, daily_limit=1_000_000, key=None):
     """Creates the tenant if needed and replaces its API key. Only the hash is stored."""
-    key = secrets.token_urlsafe(32)
+    key = key or secrets.token_urlsafe(32)
     with psycopg.connect(ADMIN_DSN) as db:
         db.execute(
             """INSERT INTO tenants (id, daily_limit, api_key_hash) VALUES (%s, %s, %s)
@@ -56,5 +57,10 @@ def issue_key(tenant_id, daily_limit=1_000_000):
 if __name__ == "__main__":
     if sys.argv[1] == "issue-key":
         print(issue_key(sys.argv[2], *map(int, sys.argv[3:4])))
+    elif sys.argv[1] == "seed-key":
+        # For hosts without a shell: CONVOFLOW_SEED_TENANT and CONVOFLOW_SEED_KEY set one tenant's key at boot.
+        if os.environ.get("CONVOFLOW_SEED_KEY"):
+            issue_key(os.environ.get("CONVOFLOW_SEED_TENANT", "demo"), 100_000, os.environ["CONVOFLOW_SEED_KEY"])
+            log("seed_key_applied", tenant_id=os.environ.get("CONVOFLOW_SEED_TENANT", "demo"))
     else:
         {"migrate": migrate, "hourly": hourly, "monitor": monitor}[sys.argv[1]]()
