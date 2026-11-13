@@ -62,5 +62,10 @@ if __name__ == "__main__":
         if os.environ.get("CONVOFLOW_SEED_KEY"):
             issue_key(os.environ.get("CONVOFLOW_SEED_TENANT", "demo"), 100_000, os.environ["CONVOFLOW_SEED_KEY"])
             log("seed_key_applied", tenant_id=os.environ.get("CONVOFLOW_SEED_TENANT", "demo"))
+    elif sys.argv[1] == "every-hour":
+        # For hosts without a scheduler (Railway). On AWS, EventBridge runs "hourly" instead.
+        while True:
+            hourly()
+            time.sleep(3600)
     else:
         {"migrate": migrate, "hourly": hourly, "monitor": monitor}[sys.argv[1]]()
