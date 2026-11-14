@@ -16,7 +16,8 @@ _DEV_KEY = "Q29udm9mbG93LWRldi1vbmx5LXNlY3JldHMta2V5ISE="  # local and tests onl
 
 def _box():
     keys = [k.strip() for k in os.environ.get("CONVOFLOW_SECRETS_KEYS", _DEV_KEY).split(",") if k.strip()]
-    return MultiFernet([Fernet(k) for k in keys])
+    # Accept standard base64 too (Terraform's random_bytes), by mapping it to url-safe.
+    return MultiFernet([Fernet(k.replace("+", "-").replace("/", "_")) for k in keys])
 
 
 def seal(value):

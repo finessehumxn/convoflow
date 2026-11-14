@@ -27,14 +27,14 @@ locals {
   zones        = slice(data.aws_availability_zones.available.names, 0, 2)
   image        = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
   task_subnets = var.production ? aws_subnet.private[*].id : aws_subnet.public[*].id
-  app_secrets = [
+  app_secrets = concat(local.shared_secrets, [
     { name = "CONVOFLOW_APP_DSN", valueFrom = aws_secretsmanager_secret.app_dsn.arn },
-  ]
-  job_secrets = [
+  ])
+  job_secrets = concat(local.shared_secrets, [
     { name = "CONVOFLOW_ADMIN_DSN", valueFrom = aws_secretsmanager_secret.admin_dsn.arn },
     { name = "CONVOFLOW_APP_DSN", valueFrom = aws_secretsmanager_secret.app_dsn.arn },
     { name = "CONVOFLOW_APP_PASSWORD", valueFrom = aws_secretsmanager_secret.app_password.arn },
-  ]
+  ])
 }
 
 resource "aws_ecr_repository" "app" {

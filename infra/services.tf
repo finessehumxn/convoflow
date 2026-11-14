@@ -30,6 +30,9 @@ resource "aws_iam_role_policy" "read_secrets" {
         aws_secretsmanager_secret.admin_dsn.arn,
         aws_secretsmanager_secret.app_dsn.arn,
         aws_secretsmanager_secret.app_password.arn,
+        aws_secretsmanager_secret.pii_key.arn,
+        aws_secretsmanager_secret.secrets_keys.arn,
+        aws_secretsmanager_secret.metrics_token.arn,
       ]
     }]
   })
