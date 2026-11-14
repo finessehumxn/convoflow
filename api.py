@@ -4,6 +4,7 @@ Built on the standard library server on purpose (see docs/adr/0002-stdlib-http.m
 What a framework would otherwise give us is done here explicitly: socket timeouts,
 a cap on requests in flight, a body size limit, and backpressure from the queue.
 """
+import base64
 import hashlib
 import hmac
 import json
@@ -13,10 +14,12 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qsl, urlparse
 
 from psycopg_pool import ConnectionPool
 
 import pii
+import secretbox
 import tracing
 import webhooks
 from adapters import BadPayload, normalize
@@ -183,10 +186,14 @@ class Handler(BaseHTTPRequestHandler):
                     "GET /metrics": "pipeline counters, per-tenant queue state",
                     "GET /alerts": "alerts currently firing",
                     "POST /v1/events/{voice|chat|email|sms}": "ingest, needs X-Api-Key",
-                    "POST /v1/webhooks/twilio/{tenant}": "Twilio SMS, verified by X-Twilio-Signature",
+                    "POST /v1/webhooks/twilio/{tenant}": "Twilio SMS and voice transcriptions, verified by X-Twilio-Signature",
                     "POST /v1/webhooks/zendesk/{tenant}": "Zendesk comments, verified by X-Zendesk-Webhook-Signature",
+                    "POST /v1/webhooks/mailgun/{tenant}": "Mailgun inbound email, verified by its signature fields",
+                    "GET /v1/findings?limit=&cursor=&severity=": "your findings, needs X-Api-Key",
                 },
             }, indent=2))
+        if self.path.split("?")[0] == "/v1/findings":
+            return self.findings()
         if self.path == "/health":
             with get_pool().connection() as db:
                 db.execute("SELECT 1")
@@ -217,7 +224,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = self.path.split("?")[0].strip("/").split("/")
         if len(parts) == 3 and parts[:2] == ["v1", "events"]:
             return self.ingest(parts[2])
-        if len(parts) == 4 and parts[:2] == ["v1", "webhooks"] and parts[2] in ("twilio", "zendesk"):
+        if len(parts) == 4 and parts[:2] == ["v1", "webhooks"] and parts[2] in ("twilio", "zendesk", "mailgun"):
             return self.webhook(parts[2], parts[3])
         self.reply(404, '{"error":"not_found"}')
 
@@ -278,15 +285,27 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchone()
         if not row:
             return self.reply(404, '{"error":"not_found"}')  # same answer whether the tenant exists or not
+        secret = secretbox.open_(row[0])
         if provider == "twilio":
-            ok, fields = webhooks.verify_twilio(row[0], self.public_url(), body, self.headers.get("X-Twilio-Signature"))
+            ok, fields = webhooks.verify_twilio(secret, self.public_url(), body, self.headers.get("X-Twilio-Signature"))
             if not ok:
                 return self.reply(401, '{"error":"bad_signature"}')
-            if "MessageSid" not in fields:
-                return self.reply(400, '{"error":"not an inbound message"}')
-            source, payload = "sms", webhooks.twilio_sms_payload(fields)
+            if "TranscriptionText" in fields:
+                source, payload = "voice", webhooks.twilio_transcription_payload(fields)
+            elif "MessageSid" in fields:
+                source, payload = "sms", webhooks.twilio_sms_payload(fields)
+            else:
+                return self.reply(400, '{"error":"not an inbound message or transcription"}')
+        elif provider == "mailgun":
+            ok, fields = webhooks.verify_mailgun(secret, body, self.headers.get("Content-Type", ""))
+            if not ok:
+                return self.reply(401, '{"error":"bad_signature"}')
+            try:
+                source, payload = "email", webhooks.mailgun_email_payload(fields)
+            except KeyError as err:
+                return self.reply(400, json.dumps({"error": f"missing {err}"}))
         else:
-            if not webhooks.verify_zendesk(row[0], self.headers.get("X-Zendesk-Webhook-Signature-Timestamp"),
+            if not webhooks.verify_zendesk(secret, self.headers.get("X-Zendesk-Webhook-Signature-Timestamp"),
                                            body, self.headers.get("X-Zendesk-Webhook-Signature")):
                 return self.reply(401, '{"error":"bad_signature"}')
             try:
@@ -301,6 +320,45 @@ class Handler(BaseHTTPRequestHandler):
         if provider == "twilio":
             return self.reply(200, "<Response/>", "text/xml")  # empty TwiML: store it, send no reply
         self.reply(202, json.dumps({"accepted": result[0], "trace_id": result[1]}))
+
+    def tenant_for_key(self, db):
+        key_hash = hash_key(self.headers.get("X-Api-Key", ""))
+        row = db.execute("SELECT tenant_id FROM tenant_keys WHERE key_hash = %s AND revoked_at IS NULL",
+                         (key_hash,)).fetchone()
+        return (row[0], key_hash[:12]) if row else (None, None)
+
+    def findings(self):
+        """A tenant's findings, oldest first, with an opaque cursor for the next page."""
+        query = dict(parse_qsl(urlparse(self.path).query))
+        try:
+            limit = max(1, min(int(query.get("limit", 100)), 500))
+            after = json.loads(base64.urlsafe_b64decode(query["cursor"])) if query.get("cursor") else None
+        except (ValueError, TypeError):
+            return self.reply(400, '{"error":"bad limit or cursor"}')
+        with get_pool().connection() as db:
+            tenant_id, kid = self.tenant_for_key(db)
+            if not tenant_id:
+                db.rollback()
+                return self.reply(401, '{"error":"bad_key"}')
+            db.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
+            rows = db.execute(
+                """SELECT found_at, event_key, rule, severity, evidence, rules_version FROM findings
+                   WHERE (%s::timestamptz IS NULL OR (found_at, event_key, rule) > (%s::timestamptz, %s, %s))
+                     AND (%s::text IS NULL OR severity = %s)
+                   ORDER BY found_at, event_key, rule LIMIT %s""",
+                (after and after[0], after and after[0], after and after[1], after and after[2],
+                 query.get("severity"), query.get("severity"), limit),
+            ).fetchall()
+            db.execute("INSERT INTO audit_log (actor, tenant_id, action, detail) VALUES (%s, %s, 'findings_read', %s)",
+                       ("key:" + kid, tenant_id, json.dumps({"returned": len(rows)})))
+            db.commit()
+        items = [{"found_at": r[0].isoformat(), "event_key": r[1], "rule": r[2], "severity": r[3],
+                  "evidence": r[4], "rules_version": r[5]} for r in rows]
+        cursor = None
+        if len(rows) == limit:
+            last = rows[-1]
+            cursor = base64.urlsafe_b64encode(json.dumps([last[0].isoformat(), last[1], last[2]]).encode()).decode()
+        self.reply(200, json.dumps({"findings": items, "next_cursor": cursor}))
 
     def demo(self):
         if not DEMO_TENANT:

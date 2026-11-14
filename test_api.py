@@ -80,8 +80,13 @@ def test_health_stays_up_when_the_queue_is_behind(base):
 def test_api_role_cannot_read_other_tenants_messages(base):
     with psycopg.connect(APP_DSN) as db:
         assert db.execute("SELECT count(*) FROM messages").fetchone() == (0,)
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
+        conn.execute("""INSERT INTO findings (tenant_id, event_key, rule, severity, evidence)
+                        VALUES ('a', 'k', 'ssn_exposed', 'critical', 'x')""")
+    with psycopg.connect(APP_DSN) as db:
+        assert db.execute("SELECT count(*) FROM findings").fetchone() == (0,)  # no tenant set: row level security hides all
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            db.execute("SELECT * FROM findings")
+            db.execute("DELETE FROM findings")
 
 
 def get(url, accept="application/json"):
