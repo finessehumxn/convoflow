@@ -1,5 +1,9 @@
-"""HTTP ingest plus health and metrics, using only the standard library."""
-import collections
+"""HTTP ingest, signed provider webhooks, health and metrics.
+
+Built on the standard library server on purpose (see docs/adr/0002-stdlib-http.md).
+What a framework would otherwise give us is done here explicitly: socket timeouts,
+a cap on requests in flight, a body size limit, and backpressure from the queue.
+"""
 import hashlib
 import json
 import os
@@ -11,46 +15,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from psycopg_pool import ConnectionPool
 
-from adapters import BadPayload, normalize
 import pii
+import tracing
+import webhooks
+from adapters import BadPayload, normalize
 from convoflow import APP_DSN, CHANNELS, RULES, enqueue, log
 
 MAX_BODY = 1_000_000
+REQUEST_TIMEOUT_SECONDS = 15
+MAX_IN_FLIGHT = int(os.environ.get("CONVOFLOW_MAX_IN_FLIGHT", "64"))
+MAX_QUEUE = int(os.environ.get("CONVOFLOW_MAX_QUEUE", "200000"))
+QUEUE_CHECK_SECONDS = 1.0
 ALERTS = {"queue_lag_seconds": 60, "dead_letter_ratio_5m": 0.05, "scan_overdue_seconds": 7200}
-
 
 # The public demo is off unless a tenant is named for it, so production never exposes it.
 DEMO_TENANT = os.environ.get("CONVOFLOW_DEMO_TENANT", "")
 DEMO_MAX_TEXT = 500
 DEMO_PER_MINUTE = 10
-_demo_hits = collections.defaultdict(collections.deque)
-_demo_lock = threading.Lock()
+# Set this when a proxy rewrites the host, so Twilio signatures are checked against the URL Twilio called.
+PUBLIC_URL = os.environ.get("CONVOFLOW_PUBLIC_URL", "").rstrip("/")
 PAGE = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page.html"), encoding="utf-8").read()
 
-
-def demo_allowed(ip, now=None):
-    now = time.monotonic() if now is None else now
-    with _demo_lock:
-        hits = _demo_hits[ip]
-        while hits and now - hits[0] > 60:
-            hits.popleft()
-        if len(hits) >= DEMO_PER_MINUTE:
-            return False
-        hits.append(now)
-        return True
-
-
-def would_flag(db, text):
-    """Runs the scanner's own rules, in the database's regex engine, on one text."""
-    rows = db.execute(
-        "SELECT rule, severity FROM unnest(%s::text[], %s::text[], %s::text[]) r(rule, severity, pattern) WHERE %s ~ pattern",
-        ([r[0] for r in RULES], [r[1] for r in RULES], [r[2] for r in RULES], text),
-    ).fetchall()
-    db.rollback()
-    return [{"rule": r, "severity": sev} for r, sev in rows]
-
-
 _pool = ConnectionPool(APP_DSN, min_size=1, max_size=10, open=False, kwargs={"prepare_threshold": None})
+_in_flight = threading.BoundedSemaphore(MAX_IN_FLIGHT)
+_queue = {"depth": 0, "checked": 0.0}
+_queue_lock = threading.Lock()
 
 
 def get_pool():
@@ -61,6 +50,39 @@ def get_pool():
 
 def hash_key(key):
     return hashlib.sha256(key.encode()).hexdigest()
+
+
+def queue_full():
+    """Counts the inbox at most once a second per process, so the check stays cheap under load."""
+    now = time.monotonic()
+    with _queue_lock:
+        if now - _queue["checked"] >= QUEUE_CHECK_SECONDS:
+            with get_pool().connection() as db:
+                _queue["depth"] = db.execute("SELECT count(*) FROM inbox").fetchone()[0]
+                db.rollback()
+            _queue["checked"] = now
+        return _queue["depth"] >= MAX_QUEUE
+
+
+def rate_allowed(db, bucket, per_minute):
+    """A per-minute counter in Postgres, so the limit holds across every API instance and restart."""
+    hits = db.execute(
+        """INSERT INTO rate_hits (bucket, window_start, hits) VALUES (%s, date_trunc('minute', now()), 1)
+           ON CONFLICT (bucket, window_start) DO UPDATE SET hits = rate_hits.hits + 1 RETURNING hits""",
+        (bucket,),
+    ).fetchone()[0]
+    db.commit()
+    return hits <= per_minute
+
+
+def would_flag(db, text):
+    """Runs the scanner's own rules, in the database's regex engine, on one text."""
+    rows = db.execute(
+        "SELECT rule, severity FROM unnest(%s::text[], %s::text[], %s::text[]) r(rule, severity, pattern) WHERE %s ~ pattern",
+        ([r[0] for r in RULES], [r[1] for r in RULES], [r[2] for r in RULES], text),
+    ).fetchall()
+    db.rollback()
+    return [{"rule": r, "severity": sev} for r, sev in rows]
 
 
 def measure(db):
@@ -80,17 +102,35 @@ def measure(db):
     }
 
 
+def measure_tenants(db):
+    rows = db.execute("SELECT * FROM tenant_metrics()").fetchall()
+    dead_tuples = db.execute("SELECT inbox_dead_tuples()").fetchone()[0]
+    db.rollback()
+    return rows, dead_tuples
+
+
 def firing(metrics):
     return sorted(name for name, limit in ALERTS.items() if metrics[name] > limit)
 
 
-def render(metrics):
+def _label(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def render(metrics, tenants=(), dead_tuples=None):
     lines = [f"convoflow_{name} {value}" for name, value in metrics.items()]
     lines += [f'convoflow_alert{{name="{name}"}} 1' for name in firing(metrics)]
+    for tenant, queued, oldest in tenants:
+        lines.append(f'convoflow_tenant_queued{{tenant="{_label(tenant)}"}} {queued}')
+        lines.append(f'convoflow_tenant_oldest_seconds{{tenant="{_label(tenant)}"}} {oldest}')
+    if dead_tuples is not None:
+        lines.append(f"convoflow_inbox_dead_tuples {dead_tuples}")
     return "\n".join(lines) + "\n"
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = REQUEST_TIMEOUT_SECONDS  # a client that stalls mid-request loses its socket
+
     def log_message(self, *args):
         pass
 
@@ -98,13 +138,27 @@ class Handler(BaseHTTPRequestHandler):
         forwarded = self.headers.get("X-Forwarded-For", "")
         return forwarded.split(",")[0].strip() or self.client_address[0]
 
-    def reply(self, code, body, content_type="application/json"):
+    def reply(self, code, body, content_type="application/json", headers=None):
         data = body.encode()
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
+
+    def read_body(self, limit=MAX_BODY):
+        """Returns the body, or None after replying with an error."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.reply(400, '{"error":"bad_length"}')
+            return None
+        if length > limit:
+            self.reply(413, '{"error":"too_large"}')
+            return None
+        return self.rfile.read(length)
 
     def do_GET(self):
         if self.path == "/" and "text/html" in self.headers.get("Accept", ""):
@@ -119,9 +173,11 @@ class Handler(BaseHTTPRequestHandler):
                 "about": "Multi-tenant ingestion for voice, chat, email and SMS with dedupe, dead letters, quotas and compliance scanning",
                 "routes": {
                     "GET /health": "database reachable",
-                    "GET /metrics": "live pipeline counters",
+                    "GET /metrics": "pipeline counters, per-tenant queue state",
                     "GET /alerts": "alerts currently firing",
                     "POST /v1/events/{voice|chat|email|sms}": "ingest, needs X-Api-Key",
+                    "POST /v1/webhooks/twilio/{tenant}": "Twilio SMS, verified by X-Twilio-Signature",
+                    "POST /v1/webhooks/zendesk/{tenant}": "Zendesk comments, verified by X-Zendesk-Webhook-Signature",
                 },
             }, indent=2))
         if self.path == "/health":
@@ -132,71 +188,145 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, '{"error":"not_found"}')
         with get_pool().connection() as db:
             metrics = measure(db)
-        if self.path == "/metrics":
-            return self.reply(200, render(metrics), "text/plain")
+            if self.path == "/metrics":
+                tenants, dead_tuples = measure_tenants(db)
+                return self.reply(200, render(metrics, tenants, dead_tuples), "text/plain")
         alerts = firing(metrics)
         self.reply(503 if alerts else 200, json.dumps({"ok": not alerts, "alerts": alerts}))
 
     def do_POST(self):
+        if not _in_flight.acquire(blocking=False):
+            return self.reply(503, '{"error":"busy"}', headers={"Retry-After": "1"})
+        try:
+            self.route_post()
+        finally:
+            _in_flight.release()
+
+    def route_post(self):
         if self.path == "/demo":
             return self.demo()
-        parts = self.path.strip("/").split("/")
-        if len(parts) != 3 or parts[:2] != ["v1", "events"]:
-            return self.reply(404, '{"error":"not_found"}')
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            return self.reply(400, '{"error":"bad_length"}')
-        if length > MAX_BODY:
-            return self.reply(413, '{"error":"too_large"}')
+        parts = self.path.split("?")[0].strip("/").split("/")
+        if len(parts) == 3 and parts[:2] == ["v1", "events"]:
+            return self.ingest(parts[2])
+        if len(parts) == 4 and parts[:2] == ["v1", "webhooks"] and parts[2] in ("twilio", "zendesk"):
+            return self.webhook(parts[2], parts[3])
+        self.reply(404, '{"error":"not_found"}')
+
+    def backpressure(self):
+        """Replies 429 and returns True when workers are too far behind to take more."""
+        if queue_full():
+            self.reply(429, '{"error":"queue_full"}', headers={"Retry-After": "5"})
+            return True
+        return False
+
+    def accept(self, tenant_id, source, payload):
+        with tracing.request_span("ingest", tenant=tenant_id, source=source) as ids:
+            try:
+                events, trace_id = normalize(source, tenant_id, payload, ids.trace_id, ids.span_id)
+            except BadPayload as err:
+                self.reply(400, json.dumps({"error": str(err)}))
+                return None
+            with get_pool().connection() as db:
+                enqueue(db, [json.dumps(e) for e in events])
+        log("events_accepted", tenant_id=tenant_id, source=source, count=len(events), trace_id=trace_id)
+        return len(events), trace_id
+
+    def ingest(self, source):
+        body = self.read_body()
+        if body is None:
+            return
         with get_pool().connection() as db:
             found = db.execute(
-                "SELECT id FROM tenants WHERE api_key_hash = %s",
+                "SELECT tenant_id FROM tenant_keys WHERE key_hash = %s AND revoked_at IS NULL",
                 (hash_key(self.headers.get("X-Api-Key", "")),),
             ).fetchone()
         if not found:
             return self.reply(401, '{"error":"bad_key"}')
+        if self.backpressure():
+            return
         try:
-            payload = json.loads(self.rfile.read(length))
-            events, trace_id = normalize(parts[2], found[0], payload)
-        except (ValueError, BadPayload) as err:
+            payload = json.loads(body)
+        except ValueError as err:
             return self.reply(400, json.dumps({"error": str(err)}))
-        with get_pool().connection() as db:
-            enqueue(db, [json.dumps(e) for e in events])
-        log("events_accepted", tenant_id=found[0], source=parts[2], count=len(events), trace_id=trace_id)
-        self.reply(202, json.dumps({"accepted": len(events), "trace_id": trace_id}))
+        result = self.accept(found[0], source, payload)
+        if result:
+            self.reply(202, json.dumps({"accepted": result[0], "trace_id": result[1]}))
 
+    def public_url(self):
+        if PUBLIC_URL:
+            return PUBLIC_URL + self.path
+        proto = self.headers.get("X-Forwarded-Proto", "http").split(",")[0].strip()
+        return f"{proto}://{self.headers.get('Host', '')}{self.path}"
+
+    def webhook(self, provider, tenant_id):
+        body = self.read_body()
+        if body is None:
+            return
+        with get_pool().connection() as db:
+            row = db.execute(
+                "SELECT secret FROM tenant_webhooks WHERE tenant_id = %s AND provider = %s",
+                (tenant_id, provider),
+            ).fetchone()
+        if not row:
+            return self.reply(404, '{"error":"not_found"}')  # same answer whether the tenant exists or not
+        if provider == "twilio":
+            ok, fields = webhooks.verify_twilio(row[0], self.public_url(), body, self.headers.get("X-Twilio-Signature"))
+            if not ok:
+                return self.reply(401, '{"error":"bad_signature"}')
+            if "MessageSid" not in fields:
+                return self.reply(400, '{"error":"not an inbound message"}')
+            source, payload = "sms", webhooks.twilio_sms_payload(fields)
+        else:
+            if not webhooks.verify_zendesk(row[0], self.headers.get("X-Zendesk-Webhook-Signature-Timestamp"),
+                                           body, self.headers.get("X-Zendesk-Webhook-Signature")):
+                return self.reply(401, '{"error":"bad_signature"}')
+            try:
+                source, payload = "chat", json.loads(body)
+            except ValueError as err:
+                return self.reply(400, json.dumps({"error": str(err)}))
+        if self.backpressure():
+            return
+        result = self.accept(tenant_id, source, payload)
+        if not result:
+            return
+        if provider == "twilio":
+            return self.reply(200, "<Response/>", "text/xml")  # empty TwiML: store it, send no reply
+        self.reply(202, json.dumps({"accepted": result[0], "trace_id": result[1]}))
 
     def demo(self):
         if not DEMO_TENANT:
             return self.reply(404, '{"error":"not_found"}')
-        if not demo_allowed(self.client_ip()):
-            return self.reply(429, '{"error":"slow_down"}')
+        with get_pool().connection() as db:
+            if not rate_allowed(db, "demo:" + self.client_ip(), DEMO_PER_MINUTE):
+                return self.reply(429, '{"error":"slow_down"}', headers={"Retry-After": "60"})
+        body = self.read_body(4096)
+        if body is None:
+            return
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > 4096:
-                return self.reply(413, '{"error":"too_large"}')
-            body = json.loads(self.rfile.read(length))
-            channel, text = body["channel"], str(body["text"]).strip()
+            data = json.loads(body)
+            channel, text = data["channel"], str(data["text"]).strip()
         except (ValueError, KeyError, TypeError):
             return self.reply(400, '{"error":"send channel and text"}')
         if channel not in CHANNELS or not text or len(text) > DEMO_MAX_TEXT:
             return self.reply(400, json.dumps({"error": f"channel must be one of {list(CHANNELS)} and text 1-{DEMO_MAX_TEXT} characters"}))
-        trace_id = uuid.uuid4().hex
+        if self.backpressure():
+            return
         text = pii.mask(text)
-        event = {"tenant_id": DEMO_TENANT, "conversation_id": f"demo-{trace_id[:12]}", "channel": channel,
-                 "text": text, "trace_id": trace_id}
-        with get_pool().connection() as db:
-            enqueue(db, [json.dumps(event)])
-            flags = would_flag(db, text)
-        log("demo_accepted", tenant_id=DEMO_TENANT, channel=channel, trace_id=trace_id, flags=len(flags))
-        self.reply(202, json.dumps({"accepted": 1, "trace_id": trace_id, "would_flag": flags, "stored_as": text}))
+        with tracing.request_span("demo", tenant=DEMO_TENANT, source=channel) as ids:
+            event = {"tenant_id": DEMO_TENANT, "conversation_id": f"demo-{uuid.uuid4().hex[:12]}", "channel": channel,
+                     "text": text, "trace_id": ids.trace_id, **({"span_id": ids.span_id} if ids.span_id else {})}
+            with get_pool().connection() as db:
+                enqueue(db, [json.dumps(event)])
+                flags = would_flag(db, text)
+        log("demo_accepted", tenant_id=DEMO_TENANT, channel=channel, trace_id=ids.trace_id, flags=len(flags))
+        self.reply(202, json.dumps({"accepted": 1, "trace_id": ids.trace_id, "would_flag": flags, "stored_as": text}))
 
 
 def serve(port=8080):
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    server.daemon_threads = True
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
-    log("api_started", port=port)
+    log("api_started", port=port, max_in_flight=MAX_IN_FLIGHT, max_queue=MAX_QUEUE)
     server.serve_forever()
     get_pool().close()
     log("api_stopped")

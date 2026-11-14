@@ -17,7 +17,7 @@ def base():
     reset()
     add_tenants({"a": 1000})
     with psycopg.connect(ADMIN_DSN, autocommit=True) as db:
-        db.execute("UPDATE tenants SET api_key_hash = %s WHERE id = 'a'", (hash_key("secret"),))
+        db.execute("INSERT INTO tenant_keys (key_hash, tenant_id) VALUES (%s, 'a')", (hash_key("secret"),))
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
@@ -107,7 +107,6 @@ def test_demo_is_off_unless_a_tenant_is_named(base, monkeypatch):
 
 def test_demo_stores_under_the_demo_tenant_and_reports_rules(base, monkeypatch):
     monkeypatch.setattr("api.DEMO_TENANT", "a")
-    monkeypatch.setattr("api._demo_hits", __import__("collections").defaultdict(__import__("collections").deque))
     status, body = post(base + "/demo", {"channel": "sms", "text": "SSN 123-45-6789"}, key="")
     assert status == 202
     assert body["would_flag"] == [{"rule": "ssn_exposed", "severity": "critical"}]
@@ -119,7 +118,6 @@ def test_demo_stores_under_the_demo_tenant_and_reports_rules(base, monkeypatch):
 
 def test_demo_rejects_bad_input_and_rate_limits(base, monkeypatch):
     monkeypatch.setattr("api.DEMO_TENANT", "a")
-    monkeypatch.setattr("api._demo_hits", __import__("collections").defaultdict(__import__("collections").deque))
     assert post(base + "/demo", {"channel": "fax", "text": "hi"}, key="")[0] == 400
     assert post(base + "/demo", {"channel": "chat", "text": "x" * 501}, key="")[0] == 400
     codes = [post(base + "/demo", {"channel": "chat", "text": f"m{i}"}, key="")[0] for i in range(12)]

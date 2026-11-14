@@ -28,12 +28,14 @@ def _sms(p):
 SOURCES = {"voice": _voice, "chat": _chat, "email": _email, "sms": _sms}
 
 
-def normalize(source, tenant_id, payload):
+def normalize(source, tenant_id, payload, trace_id=None, span_id=None):
+    """trace_id and span_id come from the request span when tracing is on."""
     if source not in SOURCES:
         raise BadPayload(f"unknown source {source}")
     try:
         events = SOURCES[source](payload)
     except (KeyError, TypeError) as err:
         raise BadPayload(f"bad {source} payload: {err}") from err
-    trace_id = uuid.uuid4().hex
-    return [{**e, "tenant_id": tenant_id, "trace_id": trace_id} for e in events], trace_id
+    trace_id = trace_id or uuid.uuid4().hex
+    stamp = {"tenant_id": tenant_id, "trace_id": trace_id, **({"span_id": span_id} if span_id else {})}
+    return [{**e, **stamp} for e in events], trace_id

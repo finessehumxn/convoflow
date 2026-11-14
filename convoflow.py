@@ -13,6 +13,7 @@ import time
 import uuid
 
 import pii
+import tracing
 import psycopg
 from psycopg import sql
 
@@ -223,10 +224,15 @@ def process_batch(db, worker_id, before_commit=None):
 
 
 def store_batch(db, worker_id, claimed, before_commit):
+    parsed = [(parse(raw), raw, enqueued_at) for _, raw, enqueued_at, _ in claimed]
+    with tracing.batch_span("store_batch", [e for (e, _), _, _ in parsed if e], worker=worker_id, claimed=len(claimed)):
+        _store_parsed(db, worker_id, claimed, parsed, before_commit)
+
+
+def _store_parsed(db, worker_id, claimed, parsed, before_commit):
     with db.cursor() as cur:
         by_tenant, dead = {}, []
-        for _, raw, enqueued_at, _ in claimed:
-            e, reason = parse(raw)
+        for (e, reason), raw, enqueued_at in parsed:
             if reason:
                 dead.append((raw, reason))
             else:
@@ -300,6 +306,7 @@ def purge():
             "DELETE FROM dead_letters WHERE failed_at < clock_timestamp() - make_interval(days => %s)",
             (DEAD_LETTER_DAYS,),
         ).rowcount
+        db.execute("DELETE FROM rate_hits WHERE window_start < now() - interval '1 hour'")
     log("purged", messages=messages, findings=findings, dead_letters=dead)
     return messages, findings, dead
 

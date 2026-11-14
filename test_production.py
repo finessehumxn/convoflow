@@ -11,7 +11,7 @@ import pytest
 from api import measure
 from convoflow import ADMIN_DSN, APP_DSN, add_tenants, enqueue, migrate, process_batch, purge, reset
 from api import hash_key
-from jobs import issue_key, publish
+from jobs import delete_tenant, issue_key, key_id, list_keys, publish, revoke_key
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def test_migrate_twice_keeps_existing_data(db):
     migrate()
     with psycopg.connect(ADMIN_DSN) as conn:
         assert conn.execute("SELECT count(*) FROM messages").fetchone() == (1,)
-        assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone() == (2,)
+        assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone() == (3,)
 
 
 def test_retention_deletes_only_expired_data(db):
@@ -69,10 +69,34 @@ def test_metrics_reach_cloudwatch_client(db):
     assert client.sent == ("Convoflow", {"QueueDepth", "QueueLagSeconds", "DeadLetterRatio5m", "ScanOverdueSeconds"})
 
 
-def test_issuing_a_new_key_replaces_the_old_one_and_stores_only_a_hash(db):
-    first = issue_key("new-tenant")
-    second = issue_key("new-tenant")
+def test_keys_rotate_without_downtime_and_store_only_a_hash(db):
+    first = issue_key("new-tenant", label="old")
+    second = issue_key("new-tenant", label="new")
     with psycopg.connect(ADMIN_DSN) as conn:
-        stored = conn.execute("SELECT api_key_hash FROM tenants WHERE id = 'new-tenant'").fetchone()[0]
-    assert stored == hash_key(second) != hash_key(first)
-    assert second not in stored
+        active = lambda: {r[0] for r in conn.execute(
+            "SELECT key_hash FROM tenant_keys WHERE tenant_id = 'new-tenant' AND revoked_at IS NULL")}
+        assert active() == {hash_key(first), hash_key(second)}
+        conn.commit()
+        assert revoke_key(key_id(hash_key(first))) == 1
+        assert active() == {hash_key(second)}
+        dump = str(conn.execute("SELECT * FROM tenant_keys").fetchall())
+    assert first not in dump and second not in dump
+    assert [k["label"] for k in list_keys("new-tenant")] == ["old", "new"]
+
+
+def test_delete_tenant_erases_its_data_everywhere_and_leaves_others(db):
+    add_tenants({"b": 1000})
+    issue_key("a")
+    enqueue(db, [event("c1"), json.dumps({"tenant_id": "b", "conversation_id": "x", "channel": "chat", "text": "hi"})])
+    process_batch(db, "w")
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
+        conn.execute("INSERT INTO dead_letters (payload, reason) VALUES (%s, 'test'), ('{not json', 'test')",
+                     (json.dumps({"tenant_id": "a", "text": "x"}),))
+    counts = delete_tenant("a")
+    assert counts == {"messages": 1, "findings": 0, "dead_letters": 1, "queued": 0}
+    with psycopg.connect(ADMIN_DSN) as conn:
+        q = lambda sql: conn.execute(sql).fetchall()
+        assert q("SELECT DISTINCT tenant_id FROM messages") == [("b",)]
+        assert q("SELECT count(*) FROM tenant_keys WHERE tenant_id = 'a'") == [(0,)]
+        assert q("SELECT count(*) FROM dead_letters") == [(1,)]
+        assert q("SELECT tenant_id, messages FROM tenant_deletions") == [("a", 1)]
