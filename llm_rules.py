@@ -14,7 +14,8 @@ import psycopg
 from convoflow import ADMIN_DSN, log
 
 ENABLED = os.environ.get("CONVOFLOW_LLM_RULES") == "1"
-MODEL = os.environ.get("CONVOFLOW_LLM_MODEL", "claude-opus-5-5")
+# Haiku 5.5 is the low-cost classification model; set CONVOFLOW_LLM_MODEL=claude-opus-5-5 for the strongest judge.
+MODEL = os.environ.get("CONVOFLOW_LLM_MODEL", "claude-haiku-5-5")
 MAX_PER_RUN = int(os.environ.get("CONVOFLOW_LLM_MAX_PER_RUN", "200"))
 BATCH = 20
 VERSION = "llm-1"
@@ -63,12 +64,14 @@ def _client():
 def classify(client, items):
     """items: [(id, text)]. Returns [(id, rule, evidence)] for ids in the batch only."""
     payload = json.dumps([{"id": i, "text": t} for i, t in items])
+    # Server-side fallback exists for the larger models only; Haiku has none.
+    fallback = {} if MODEL.startswith("claude-haiku") else {
+        "betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
     response = client.beta.messages.create(
         model=MODEL,
         max_tokens=4000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
         system=SYSTEM,
+        **fallback,
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
         messages=[{"role": "user", "content": f"Messages:\n{payload}"}],
     )

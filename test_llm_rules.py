@@ -63,7 +63,17 @@ def test_only_masked_text_is_sent_and_request_is_constrained():
     llm_rules.scan(client)
     req = client.sent[0]
     assert "4111 1111" not in json.dumps(req) and "[card ****1111" in json.dumps(req)
-    assert req["output_config"]["format"]["type"] == "json_schema" and req["fallbacks"] == "default"
+    assert req["output_config"]["format"]["type"] == "json_schema"
+    assert req["model"] == "claude-haiku-5-5" and "fallbacks" not in req  # Haiku has no server-side fallback
+
+
+def test_larger_models_get_server_side_fallback(monkeypatch):
+    monkeypatch.setattr(llm_rules, "MODEL", "claude-opus-5-5")
+    setup("hello")
+    client = FakeClient(lambda items: [])
+    llm_rules.scan(client)
+    req = client.sent[0]
+    assert req["fallbacks"] == "default" and req["betas"] == ["server-side-fallback-2026-07-01"]
 
 
 def test_answers_about_ids_outside_the_batch_or_unknown_rules_are_ignored():

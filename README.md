@@ -72,7 +72,7 @@ Production settings, the same on every API and worker unless noted:
 | `CONVOFLOW_METRICS_TOKEN` | API only: bearer token for per-tenant `/metrics` |
 | `CONVOFLOW_OPS_WEBHOOK` | worker only: Slack-compatible URL for operator alerts |
 | `CONVOFLOW_BACKUP_DIR` | worker only: where daily backups go |
-| `CONVOFLOW_LLM_RULES`, `CONVOFLOW_LLM_MODEL` | worker only: model-based rules, off by default |
+| `CONVOFLOW_LLM_RULES`, `CONVOFLOW_LLM_MODEL` | worker only: model-based rules, off by default; model defaults to `claude-haiku-5-5`, at most `CONVOFLOW_LLM_MAX_PER_RUN` (200) messages an hour |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | send traces to a collector |
 
 ## Measured
