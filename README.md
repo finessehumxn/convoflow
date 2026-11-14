@@ -100,6 +100,8 @@ Over the network, against the Railway deploy with 3 worker replicas, from one la
 | 16 connections | 20,000 | all stored, HTTP p99 0.19s, about 2,600 events a second end to end |
 | 32 connections | 60,000 | all stored, HTTP p99 0.28s, about 3,650 events a second |
 | 8 connections, every worker replica replaced mid-run | 150,000 | all stored, none lost or duplicated, HTTP p99 0.19s |
+| 32 connections, 4 workers | 1,000,000 | 116 of 100,000 requests got 502 from the proxy (listen backlog of 5); every accepted event stored |
+| same, after raising the backlog to 256 | 1,000,000 | 0 failed requests, about 3,000 events a second, HTTP p99 0.21s; the tenant's 2M daily quota cut in and held exactly |
 
 The replacement was a Railway redeploy, which sends SIGTERM, so it is a graceful shutdown. The hard-kill case (SIGKILL mid-batch) is covered by the local runs above.
 

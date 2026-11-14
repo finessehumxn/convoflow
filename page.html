@@ -394,7 +394,7 @@ footer ul a{font-size:13px}
         <tr><th scope="row">Capped tenant</th><td>Held to 5,000 on each of the 2 days the run crossed</td></tr>
       </table>
       <p class="honest"><strong>A bug the soak found</strong>The soak first reported the capped tenant as over its limit. The quota had held, but the check compared two days against a one-day limit. Investigating it exposed a real bug: workers used their own clocks for the quota day. The day now comes from the database in UTC, with a test that fails on the old code.</p>
-      <p class="honest"><strong>Over the network</strong>150,000 events sent over HTTPS to this deployment, with 3 worker replicas on separate machines. Every replica was replaced by a redeploy mid-run. All 150,000 were stored, none lost or duplicated, with HTTP p99 at 0.19 seconds. The redeploy sends SIGTERM, so that was a graceful shutdown; the hard kill is covered by the soak.</p>
+      <p class="honest"><strong>Over the network</strong>1,000,000 events over HTTPS to this deployment with 4 workers: 0 failed requests and HTTP p99 at 0.21 seconds, after a first run exposed 116 proxy errors from a listen backlog of 5. Before that, 150,000 events sent over HTTPS to this deployment, with 3 worker replicas on separate machines. Every replica was replaced by a redeploy mid-run. All 150,000 were stored, none lost or duplicated, with HTTP p99 at 0.19 seconds. The redeploy sends SIGTERM, so that was a graceful shutdown; the hard kill is covered by the soak.</p>
     </section>
 
     <section class="block" aria-labelledby="noisy-h">
