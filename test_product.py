@@ -283,3 +283,20 @@ def test_ops_are_paged_when_an_alert_starts_and_when_it_resolves(base, local_ale
     assert jobs.page_ops(*jobs.ops_transitions(["queue_lag_seconds"], []), {})
     texts = [json.loads(b)["text"] for _, b in rx.got]
     assert "firing: queue_lag_seconds = 75.00" in texts[0] and "resolved: queue_lag_seconds" in texts[1]
+
+
+def test_scheduler_survives_a_database_error_and_tries_again(monkeypatch):
+    import jobs
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise psycopg.errors.UndefinedTable("relation does not exist")
+        raise SystemExit  # stop the loop on the retry
+
+    monkeypatch.setattr(jobs, "hourly", flaky)
+    monkeypatch.setattr(jobs.time, "sleep", lambda s: None)
+    with pytest.raises(SystemExit):
+        jobs.scheduler(tick=0, hour=0)
+    assert len(calls) == 2

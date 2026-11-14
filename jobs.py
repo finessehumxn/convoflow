@@ -85,11 +85,17 @@ def scheduler(tick=60, hour=3600):
     On AWS, CloudWatch alarms page through SNS and EventBridge runs hourly instead."""
     firing_before, last_hourly = [], 0.0
     while True:
-        if time.monotonic() - last_hourly >= hour:
-            hourly()
-            last_hourly = time.monotonic()
-        with psycopg.connect(APP_DSN) as db:
-            metrics = measure(db)
+        try:
+            if time.monotonic() - last_hourly >= hour:
+                hourly()
+                last_hourly = time.monotonic()
+            with psycopg.connect(APP_DSN) as db:
+                metrics = measure(db)
+        except psycopg.Error as err:
+            # Keep the loop alive: a missing migration or a database restart must not stop scans for good.
+            log("scheduler_error", error=f"{type(err).__name__}: {err}")
+            time.sleep(tick)
+            continue
         now_firing = firing(metrics)
         started, resolved = ops_transitions(firing_before, now_firing)
         try:
