@@ -151,6 +151,8 @@ h1{font-size:clamp(3.1rem,11vw,5rem);line-height:.98;margin-bottom:26px;text-wra
 .flags li.critical{border-color:var(--alert-border);color:#F0A08F}
 .flags li i{font-style:normal;opacity:.75}
 .trace{display:flex;align-items:baseline;gap:10px;margin:12px 0 0;font:500 10px/1 var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--soft);min-width:0}
+.trace.stored{margin-top:8px}
+.trace.stored code{white-space:normal;word-break:break-word;overflow:visible}
 .trace code{background:none;padding:0;letter-spacing:0;text-transform:none;font-size:12px;color:var(--cream);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .scan-msg{margin:10px 0 0;font-size:13px;color:var(--soft);min-height:1.6em}
 @media (max-width:520px){.scan-msg{min-height:3.2em}}
@@ -296,7 +298,7 @@ footer ul a{font-size:13px}
         <p class="lede rv d3">Multi-tenant ingestion for voice, chat, email and SMS. Every message is deduplicated, held to its tenant's quota, kept apart from other tenants by row level security, and scanned for compliance problems like exposed card numbers. It is running right now. Send it something.</p>
         <dl class="specs rv d4">
           <div><dt>Stack</dt><dd>Python, Postgres</dd></div>
-          <div><dt>Tests</dt><dd>37 passing</dd></div>
+          <div><dt>Tests</dt><dd>58 passing</dd></div>
           <div><dt>Running on</dt><dd>Railway</dd></div>
         </dl>
       </div>
@@ -317,6 +319,7 @@ footer ul a{font-size:13px}
           <div class="scan-head"><span class="lamp" aria-hidden="true"></span><span class="scan-label">Scanner report</span><span class="scan-state" id="scanState">Waiting for a message</span></div>
           <ul class="flags" id="flags" aria-label="Rules this message would trip"></ul>
           <p class="trace">Trace <code id="trace">none yet</code></p>
+          <p class="trace stored">Stored as <code id="storedAs">none yet</code></p>
           <p class="scan-msg" id="scanMsg">Pick a sample below and press Send.</p>
         </div>
 
@@ -429,7 +432,11 @@ footer ul a{font-size:13px}
           <li><span>Content-hash keys per tenant make replays safe.</span></li>
           <li><span>Row level security keeps tenants apart. Workers connect as a role that cannot bypass it.</span></li>
           <li><span>A batch the database rejects is retried row by row with backoff, so one bad row cannot block the rest. After 3 tries it goes to dead letters, which can be replayed.</span></li>
-          <li><span>The scanner runs its rules inside Postgres every hour and stores evidence for each finding.</span></li>
+          <li><span>Card numbers (Luhn-checked) and SSNs are masked before anything is written, keeping the last four digits and a keyed fingerprint. No table ever holds the raw value.</span></li>
+          <li><span>The scanner runs versioned rules inside Postgres every hour and stores masked evidence for each finding. Every rule has a labelled test corpus, and a tenant can switch rules off.</span></li>
+          <li><span>Twilio and Zendesk webhooks are accepted only with a valid signature from that tenant's secret. Zendesk requests older than five minutes are refused.</span></li>
+          <li><span>Past a queue limit the API answers 429 with Retry-After, and past a cap on requests in flight it answers 503, so a backlog slows senders instead of the database.</span></li>
+          <li><span>OpenTelemetry traces follow one message from the HTTP request to the worker batch that stored it. Per-tenant backlog is on <code>/metrics</code>.</span></li>
           <li><span>Terraform for AWS (ECS Fargate on ARM, RDS, load balancer, autoscaling, CloudWatch alarms, GitHub OIDC deploys) is written and validated. This demo runs on Railway.</span></li>
         </ol>
       </div>
@@ -437,7 +444,7 @@ footer ul a{font-size:13px}
   </main>
 
   <footer>
-    <p>Python, Postgres, standard-library HTTP. 37 tests.</p>
+    <p>Python, Postgres, standard-library HTTP. 58 tests.</p>
     <ul>
       <li><a href="https://github.com/finessehumxn/convoflow">Source on GitHub</a></li>
       <li><a href="/metrics">Raw metrics</a></li>
@@ -552,7 +559,8 @@ footer ul a{font-size:13px}
 
   const badgeWord = {idle: 'idle', busy: 'scanning', flag: 'flagged', clean: 'clean', err: 'stopped'};
   function scan(state, label) { $('scan').dataset.state = state; $('try').dataset.scan = state; $('scanState').textContent = label; $('badgeState').textContent = badgeWord[state] || state; }
-  function setTrace(t) {
+  function setTrace(t, stored) {
+    $('storedAs').textContent = stored || 'none yet';
     const c = $('trace');
     if (!t) { c.textContent = 'none yet'; c.removeAttribute('title'); return; }
     c.title = t;
@@ -609,7 +617,7 @@ footer ul a{font-size:13px}
     });
     if (flags.length) scan('flag', flags.length === 1 ? 'Would flag 1 rule' : 'Would flag ' + flags.length + ' rules');
     else scan('clean', 'Clean, no rules tripped');
-    setTrace(d.trace_id ? String(d.trace_id) : '');
+    setTrace(d.trace_id ? String(d.trace_id) : '', d.stored_as ? String(d.stored_as) : '');
     $('scanMsg').textContent = 'Accepted. Watch messages stored tick up below.';
     busy(false);
     setTimeout(refresh, 1500);
