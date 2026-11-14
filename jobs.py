@@ -166,7 +166,11 @@ if __name__ == "__main__":
     elif cmd == "seed-key":
         # For hosts without a shell: CONVOFLOW_SEED_TENANT and CONVOFLOW_SEED_KEY set one tenant's key at boot.
         if os.environ.get("CONVOFLOW_SEED_KEY"):
-            issue_key(os.environ.get("CONVOFLOW_SEED_TENANT", "demo"), 100_000, "seed", os.environ["CONVOFLOW_SEED_KEY"])
+            tenant = os.environ.get("CONVOFLOW_SEED_TENANT", "demo")
+            limit = int(os.environ.get("CONVOFLOW_SEED_LIMIT", "100000"))
+            issue_key(tenant, limit, "seed", os.environ["CONVOFLOW_SEED_KEY"])
+            with psycopg.connect(ADMIN_DSN) as db:
+                db.execute("UPDATE tenants SET daily_limit = %s WHERE id = %s", (limit, tenant))
             log("seed_key_applied", tenant_id=os.environ.get("CONVOFLOW_SEED_TENANT", "demo"))
     elif cmd == "every-hour":
         # For hosts without a scheduler (Railway). On AWS, EventBridge runs "hourly" instead.
