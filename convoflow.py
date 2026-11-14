@@ -29,6 +29,9 @@ RETRY_BASE_SECONDS = 2
 DEAD_LETTER_DAYS = 90
 FAIR_CLAIMS = os.environ.get("CONVOFLOW_FAIR", "1") == "1"
 
+# Bump RULES_VERSION whenever a rule is added or changed. Each finding records it.
+RULES_VERSION = "2"
+
 # Rules run in the database so a scan never pulls messages into Python. Card numbers
 # and SSNs are masked before storage (see pii.py), so those rules match the tokens.
 RULES = (
@@ -356,17 +359,18 @@ def scan(lag_seconds=SCAN_LAG_SECONDS):
         found = 0
         for rule, severity, pattern in RULES:
             found += db.execute(
-                """INSERT INTO findings (tenant_id, event_key, rule, severity, evidence)
-                   SELECT tenant_id, event_key, %s, %s, substring(text from %s)
-                   FROM messages
-                   WHERE ingested_at >= %s AND ingested_at < %s AND text ~ %s
+                """INSERT INTO findings (tenant_id, event_key, rule, severity, evidence, rules_version)
+                   SELECT m.tenant_id, m.event_key, %s, %s, substring(m.text from %s), %s
+                   FROM messages m JOIN tenants t ON t.id = m.tenant_id
+                   WHERE m.ingested_at >= %s AND m.ingested_at < %s AND m.text ~ %s
+                     AND NOT (%s = ANY (t.disabled_rules))
                    ON CONFLICT DO NOTHING""",
-                (rule, severity, pattern, window_start, window_end, pattern),
+                (rule, severity, pattern, RULES_VERSION, window_start, window_end, pattern, rule),
             ).rowcount
         db.execute(
-            """INSERT INTO scan_runs (window_start, window_end, scanned, findings, seconds)
-               VALUES (%s, %s, %s, %s, %s)""",
-            (window_start, window_end, scanned, found, time.perf_counter() - start),
+            """INSERT INTO scan_runs (window_start, window_end, scanned, findings, seconds, rules_version)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (window_start, window_end, scanned, found, time.perf_counter() - start, RULES_VERSION),
         )
     return scanned, found
 

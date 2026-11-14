@@ -213,3 +213,13 @@ def test_failed_rows_wait_for_their_backoff(db, monkeypatch):
     process_batch(db, "w")
     assert process_batch(db, "w") == 0
     assert admin("SELECT attempts FROM inbox") == [(1,)]
+
+
+def test_tenant_can_switch_off_a_rule_and_findings_record_the_rule_version(db):
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as conn:
+        conn.execute("UPDATE tenants SET disabled_rules = '{card_number_exposed}' WHERE id = 'b'")
+    card = "card 4111 1111 1111 1111"
+    enqueue(db, [event("a", "c1", card), event("b", "c2", card)])
+    process_batch(db, "w")
+    scan(lag_seconds=0)
+    assert admin("SELECT tenant_id, rules_version FROM findings") == [("a", convoflow.RULES_VERSION)]
