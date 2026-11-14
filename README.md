@@ -17,7 +17,14 @@ Live demo: https://api-production-0f7cc354.up.railway.app (see `/health`, `/metr
 - Several API keys per tenant, revocable, so keys rotate without downtime. `delete-tenant` erases a tenant's data in one transaction and records that it happened.
 - OpenTelemetry traces follow one message from its HTTP request to the worker batch that stored it. Per-tenant backlog and inbox dead tuples are on `/metrics`.
 
-Design decisions are in `docs/adr/`: Postgres as the queue, the standard-library HTTP server, masking before storage, and the UTC quota day.
+- Customers read their findings at `GET /v1/findings` (cursor paging, severity filter, scoped by row level security) and get new ones pushed: a signed POST or a Slack message, retried for 24 hours. Alert URLs must be public https and redirects are not followed.
+- Mailgun inbound email and Twilio voice transcriptions are accepted with signature checks, alongside Twilio SMS and Zendesk.
+- Optional model-based rules (`CONVOFLOW_LLM_RULES=1`) catch what regex cannot: claims to be human in any wording, unauthorized refund or guarantee promises, abuse. Only masked text is sent.
+- Webhook and alert secrets are encrypted at rest with rotatable keys. `audit_log` records key, secret and tenant changes and every findings read.
+- Daily logical backups to a volume, keeping 7; restore refuses to commit if any row count differs, and a test runs the full drill.
+- The scheduler pages a Slack-compatible webhook when an alert starts or resolves, and survives database errors.
+
+Design decisions are in `docs/adr/`: Postgres as the queue, the standard-library HTTP server, masking before storage, and the UTC quota day. Service levels and data handling are in `docs/SLO.md`.
 
 ## Pieces
 
@@ -45,12 +52,28 @@ Design decisions are in `docs/adr/`: Postgres as the queue, the standard-library
     python jobs.py revoke-key KEY_ID
     python jobs.py set-webhook TENANT twilio|zendesk SECRET
     python jobs.py delete-tenant TENANT --confirm
+    python jobs.py set-alert TENANT HTTPS_URL SECRET [low|medium|high|critical]
+    python jobs.py rotate-secrets
+    python jobs.py backup [DIR]
+    python jobs.py restore DIR          # into a fresh, migrated database
 
 Twilio: point the messaging webhook at `/v1/webhooks/twilio/TENANT` and store the account auth token with `set-webhook`. Behind a proxy that rewrites the host, set `CONVOFLOW_PUBLIC_URL` so the signature is checked against the URL Twilio called.
 
 Zendesk: create a webhook to `/v1/webhooks/zendesk/TENANT` with signing on, store its signing secret, and use this body in the trigger: `{"ticket": {"id": "{{ticket.id}}"}, "comment": {"body": "{{ticket.latest_comment}}"}}`.
 
-Production needs `CONVOFLOW_PII_KEY` set to the same random value on every API and worker.
+Mailgun: add a route that forwards to `/v1/webhooks/mailgun/TENANT` and store the domain's webhook signing key with `set-webhook TENANT mailgun KEY`.
+
+Production settings, the same on every API and worker unless noted:
+
+| Variable | Purpose |
+| --- | --- |
+| `CONVOFLOW_PII_KEY` | keyed fingerprints for masked values |
+| `CONVOFLOW_SECRETS_KEYS` | Fernet keys for stored secrets, newest first |
+| `CONVOFLOW_METRICS_TOKEN` | API only: bearer token for per-tenant `/metrics` |
+| `CONVOFLOW_OPS_WEBHOOK` | worker only: Slack-compatible URL for operator alerts |
+| `CONVOFLOW_BACKUP_DIR` | worker only: where daily backups go |
+| `CONVOFLOW_LLM_RULES`, `CONVOFLOW_LLM_MODEL` | worker only: model-based rules, off by default |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | send traces to a collector |
 
 ## Measured
 
