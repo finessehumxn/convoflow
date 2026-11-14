@@ -94,6 +94,33 @@ def set_webhook(tenant_id, provider, secret):
         )
 
 
+def backfill_mask(batch=1000):
+    """Masks rows stored before masking existed. Runs once; schema_migrations records it."""
+    import pii
+    marker = "backfill:mask-v1"
+    with psycopg.connect(ADMIN_DSN) as db:
+        if db.execute("SELECT 1 FROM schema_migrations WHERE name = %s", (marker,)).fetchone():
+            return 0
+        changed = 0
+        for table, key, column in (("messages", "tenant_id, event_key", "text"),
+                                   ("findings", "tenant_id, event_key, rule", "evidence"),
+                                   ("dead_letters", "id", "payload")):
+            with db.cursor(name=f"scan_{table}") as cur:
+                cur.itersize = batch
+                cur.execute(f"SELECT {key}, {column} FROM {table} WHERE {column} ~ '[0-9]{{3}}'")
+                rows = [(r[:-1], r[-1]) for r in cur]
+            cols = [c.strip() for c in key.split(",")]
+            where = " AND ".join(f"{c} = %s" for c in cols)
+            for ids, value in rows:
+                masked = pii.mask(value)
+                if masked != value:
+                    db.execute(f"UPDATE {table} SET {column} = %s WHERE {where}", (masked, *ids))
+                    changed += 1
+        db.execute("INSERT INTO schema_migrations (name) VALUES (%s)", (marker,))
+    log("backfill_mask_done", rows=changed)
+    return changed
+
+
 def delete_tenant(tenant_id):
     """Erases one tenant's data in a single transaction and records that it happened."""
     with psycopg.connect(ADMIN_DSN) as db:
@@ -130,6 +157,8 @@ if __name__ == "__main__":
     elif cmd == "set-webhook":
         set_webhook(*args[:3])
         print("saved")
+    elif cmd == "backfill-mask":
+        print(backfill_mask(), "rows masked")
     elif cmd == "delete-tenant":
         if "--confirm" not in args:
             raise SystemExit("this erases the tenant's data; add --confirm")

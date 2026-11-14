@@ -48,3 +48,22 @@ def test_raw_values_never_reach_any_table():
         dump += str(admin.execute("SELECT evidence FROM findings").fetchall())
         assert secret_card not in dump and secret_ssn not in dump
         assert "****1111" in dump and "***-**-6789" in dump
+
+
+def test_backfill_masks_rows_stored_before_masking_and_runs_once():
+    from jobs import backfill_mask
+    reset()
+    add_tenants({"a": 1000})
+    with psycopg.connect(ADMIN_DSN, autocommit=True) as admin:
+        admin.execute("""INSERT INTO messages (tenant_id, event_key, conversation_id, channel, text, enqueued_at)
+                         VALUES ('a', 'k1', 'c', 'chat', 'old 4111 1111 1111 1111', now())""")
+        admin.execute("INSERT INTO dead_letters (payload, reason) VALUES ('ssn 123-45-6789', 'x')")
+        admin.execute("""INSERT INTO findings (tenant_id, event_key, rule, severity, evidence)
+                         VALUES ('a', 'k1', 'card_number_exposed', 'critical', '4111 1111 1111 1111')""")
+    assert backfill_mask() == 3
+    assert backfill_mask() == 0
+    with psycopg.connect(ADMIN_DSN) as admin:
+        dump = str(admin.execute("SELECT text FROM messages").fetchall())
+        dump += str(admin.execute("SELECT payload FROM dead_letters").fetchall())
+        dump += str(admin.execute("SELECT evidence FROM findings").fetchall())
+    assert "4111 1111" not in dump and "123-45-6789" not in dump
