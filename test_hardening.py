@@ -112,12 +112,14 @@ def test_requests_over_the_in_flight_cap_get_503(base, monkeypatch):
     assert status == 503 and headers["Retry-After"] == "1"
 
 
-def test_metrics_show_each_tenants_backlog(base):
+def test_metrics_show_tenant_backlog_only_to_operators(base, monkeypatch):
+    monkeypatch.setattr(api, "METRICS_TOKEN", "ops-token")
     with psycopg.connect(APP_DSN) as db:
         enqueue(db, [json.dumps({"tenant_id": "a", "conversation_id": "c", "channel": "chat", "text": "x"})])
-    with urllib.request.urlopen(base + "/metrics") as res:
-        text = res.read().decode()
-    assert 'convoflow_tenant_queued{tenant="a"} 1' in text and "convoflow_inbox_dead_tuples" in text
+    get = lambda headers: urllib.request.urlopen(urllib.request.Request(base + "/metrics", headers=headers)).read().decode()
+    public, wrong, operator = get({}), get({"Authorization": "Bearer nope"}), get({"Authorization": "Bearer ops-token"})
+    assert "tenant=" not in public and "tenant=" not in wrong and "convoflow_queue_depth 1" in public
+    assert 'convoflow_tenant_queued{tenant="a"} 1' in operator and "convoflow_inbox_dead_tuples" in operator
 
 
 def test_demo_rate_limit_is_shared_through_the_database(base, monkeypatch):

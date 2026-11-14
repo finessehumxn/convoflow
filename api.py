@@ -5,6 +5,7 @@ What a framework would otherwise give us is done here explicitly: socket timeout
 a cap on requests in flight, a body size limit, and backpressure from the queue.
 """
 import hashlib
+import hmac
 import json
 import os
 import signal
@@ -34,6 +35,8 @@ DEMO_MAX_TEXT = 500
 DEMO_PER_MINUTE = 10
 # Set this when a proxy rewrites the host, so Twilio signatures are checked against the URL Twilio called.
 PUBLIC_URL = os.environ.get("CONVOFLOW_PUBLIC_URL", "").rstrip("/")
+# Per-tenant metrics name tenants, so they are shown only with this operator token.
+METRICS_TOKEN = os.environ.get("CONVOFLOW_METRICS_TOKEN", "")
 PAGE = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page.html"), encoding="utf-8").read()
 
 _pool = ConnectionPool(APP_DSN, min_size=1, max_size=10, open=False, kwargs={"prepare_threshold": None})
@@ -138,6 +141,10 @@ class Handler(BaseHTTPRequestHandler):
         forwarded = self.headers.get("X-Forwarded-For", "")
         return forwarded.split(",")[0].strip() or self.client_address[0]
 
+    def is_operator(self):
+        given = self.headers.get("Authorization", "")
+        return bool(METRICS_TOKEN) and hmac.compare_digest(given, "Bearer " + METRICS_TOKEN)
+
     def reply(self, code, body, content_type="application/json", headers=None):
         data = body.encode()
         self.send_response(code)
@@ -190,6 +197,8 @@ class Handler(BaseHTTPRequestHandler):
             metrics = measure(db)
             if self.path == "/metrics":
                 tenants, dead_tuples = measure_tenants(db)
+                if not self.is_operator():
+                    tenants = ()  # totals only: tenant names stay private
                 return self.reply(200, render(metrics, tenants, dead_tuples), "text/plain")
         alerts = firing(metrics)
         self.reply(503 if alerts else 200, json.dumps({"ok": not alerts, "alerts": alerts}))
