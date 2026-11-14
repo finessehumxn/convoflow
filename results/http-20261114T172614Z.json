@@ -1,0 +1,29 @@
+{
+  "target": "https://api-production-0f7cc354.up.railway.app",
+  "run_id": "46c2d74a",
+  "events_accepted": 1000000,
+  "requests": 100000,
+  "status_codes": {
+    "202": 100000
+  },
+  "concurrency": 32,
+  "events_per_request": 10,
+  "send_seconds": 330.3,
+  "drain_seconds": 331.7,
+  "events_per_second_end_to_end": 3014.4,
+  "http_latency_seconds": {
+    "p50": 0.089,
+    "p95": 0.119,
+    "p99": 0.213
+  },
+  "stored": 771154.0,
+  "duplicates": 0.0,
+  "dead": 228846.0,
+  "requests_never_accepted": 0,
+  "checks": {
+    "every_event_accounted_for": true,
+    "queue_drained": true,
+    "every_request_accepted": true
+  },
+  "note": "After raising the API listen backlog to 256: 0 of 100,000 requests failed. 4 worker processes on separate Railway machines. The 228,846 dead letters are over_quota: earlier runs that UTC day had stored about 1,228,840 events for this tenant, and its daily limit is 2,000,000, so 771,154 fit. The quota held under full load."
+}

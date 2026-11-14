@@ -23,5 +23,6 @@
   "checks": {
     "every_event_accounted_for": true,
     "queue_drained": true
-  }
+  },
+  "note": "Before the backlog fix: every accepted event stored, but 116 of 100,000 requests got 502 from the Railway proxy and were not retried. Cause: the stdlib HTTP server's default listen backlog of 5."
 }
