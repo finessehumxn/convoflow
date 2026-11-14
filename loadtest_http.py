@@ -66,6 +66,10 @@ def run(base, key, events, per_request, concurrency):
                 if res.status in (429, 503):
                     time.sleep(float(res.getheader("Retry-After", "1")))
                     continue
+                if res.status in (502, 504):
+                    # Safe to resend: events are keyed by content, so a duplicate is dropped.
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
                 break
 
     before = metrics(base)
@@ -82,6 +86,7 @@ def run(base, key, events, per_request, concurrency):
     after = metrics(base)
 
     accepted = codes.get(202, 0) * per_request
+    failed_requests = requests - codes.get(202, 0)
     stored = after["stored_total"] - before["stored_total"]
     dups = after["duplicates_total"] - before["duplicates_total"]
     dead = after["dead_total"] - before["dead_total"]
@@ -95,7 +100,9 @@ def run(base, key, events, per_request, concurrency):
         "events_per_second_end_to_end": round(accepted / drained_seconds, 1),
         "http_latency_seconds": {"p50": pct(0.5), "p95": pct(0.95), "p99": pct(0.99)},
         "stored": stored, "duplicates": dups, "dead": dead,
-        "checks": {"every_event_accounted_for": stored + dups + dead == accepted, "queue_drained": True},
+        "requests_never_accepted": failed_requests,
+        "checks": {"every_event_accounted_for": stored + dups + dead == accepted, "queue_drained": True,
+                   "every_request_accepted": failed_requests == 0},
     }
     os.makedirs("results", exist_ok=True)
     path = f"results/http-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"

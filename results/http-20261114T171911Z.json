@@ -1,0 +1,27 @@
+{
+  "target": "https://api-production-0f7cc354.up.railway.app",
+  "run_id": "87c743b8",
+  "events_accepted": 998840,
+  "requests": 100000,
+  "status_codes": {
+    "202": 99884,
+    "502": 116
+  },
+  "concurrency": 32,
+  "events_per_request": 10,
+  "send_seconds": 266.1,
+  "drain_seconds": 266.3,
+  "events_per_second_end_to_end": 3750.9,
+  "http_latency_seconds": {
+    "p50": 0.072,
+    "p95": 0.107,
+    "p99": 0.329
+  },
+  "stored": 998840.0,
+  "duplicates": 0.0,
+  "dead": 0.0,
+  "checks": {
+    "every_event_accounted_for": true,
+    "queue_drained": true
+  }
+}

@@ -298,7 +298,7 @@ footer ul a{font-size:13px}
         <p class="lede rv d3">Multi-tenant ingestion for voice, chat, email and SMS. Every message is deduplicated, held to its tenant's quota, kept apart from other tenants by row level security, and scanned for compliance problems like exposed card numbers. It is running right now. Send it something.</p>
         <dl class="specs rv d4">
           <div><dt>Stack</dt><dd>Python, Postgres</dd></div>
-          <div><dt>Tests</dt><dd>58 passing</dd></div>
+          <div><dt>Tests</dt><dd>89 passing</dd></div>
           <div><dt>Running on</dt><dd>Railway</dd></div>
         </dl>
       </div>
@@ -435,7 +435,9 @@ footer ul a{font-size:13px}
           <li><span>A batch the database rejects is retried row by row with backoff, so one bad row cannot block the rest. After 3 tries it goes to dead letters, which can be replayed.</span></li>
           <li><span>Card numbers (Luhn-checked) and SSNs are masked before anything is written, keeping the last four digits and a keyed fingerprint. No table ever holds the raw value.</span></li>
           <li><span>The scanner runs versioned rules inside Postgres every hour and stores masked evidence for each finding. Every rule has a labelled test corpus, and a tenant can switch rules off.</span></li>
-          <li><span>Twilio and Zendesk webhooks are accepted only with a valid signature from that tenant's secret. Zendesk requests older than five minutes are refused.</span></li>
+          <li><span>Twilio SMS and voice transcripts, Zendesk comments and Mailgun email are accepted only with a valid signature from that tenant's secret, checked against Twilio's own library. Old timestamps are refused.</span></li>
+          <li><span>Customers read their findings through a paged API scoped by row level security, and get new ones pushed to their own endpoint or Slack, signed and retried. Every read is in an audit log.</span></li>
+          <li><span>Optional model-based rules catch what a pattern cannot: an agent claiming to be human in any wording, or promising a refund it cannot give. Only masked text is sent.</span></li>
           <li><span>Past a queue limit the API answers 429 with Retry-After, and past a cap on requests in flight it answers 503, so a backlog slows senders instead of the database.</span></li>
           <li><span>OpenTelemetry traces follow one message from the HTTP request to the worker batch that stored it. Per-tenant backlog is on <code>/metrics</code>.</span></li>
           <li><span>Terraform for AWS (ECS Fargate on ARM, RDS, load balancer, autoscaling, CloudWatch alarms, GitHub OIDC deploys) is written and validated. This demo runs on Railway.</span></li>
@@ -445,7 +447,7 @@ footer ul a{font-size:13px}
   </main>
 
   <footer>
-    <p>Python, Postgres, standard-library HTTP. 58 tests.</p>
+    <p>Python, Postgres, standard-library HTTP. 89 tests.</p>
     <ul>
       <li><a href="https://github.com/finessehumxn/convoflow">Source on GitHub</a></li>
       <li><a href="/metrics">Raw metrics</a></li>

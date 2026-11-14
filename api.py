@@ -389,9 +389,15 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(202, json.dumps({"accepted": 1, "trace_id": ids.trace_id, "would_flag": flags, "stored_as": text}))
 
 
+class Server(ThreadingHTTPServer):
+    # The default listen backlog is 5. Under bursts the proxy in front gets refused
+    # connections and answers 502, so queue more before the kernel turns them away.
+    request_queue_size = 256
+    daemon_threads = True
+
+
 def serve(port=8080):
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    server.daemon_threads = True
+    server = Server(("0.0.0.0", port), Handler)
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown).start())
     log("api_started", port=port, max_in_flight=MAX_IN_FLIGHT, max_queue=MAX_QUEUE)
     server.serve_forever()
