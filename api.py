@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from psycopg_pool import ConnectionPool
 
 from adapters import BadPayload, normalize
+import pii
 from convoflow import APP_DSN, CHANNELS, RULES, enqueue, log
 
 MAX_BODY = 1_000_000
@@ -182,13 +183,14 @@ class Handler(BaseHTTPRequestHandler):
         if channel not in CHANNELS or not text or len(text) > DEMO_MAX_TEXT:
             return self.reply(400, json.dumps({"error": f"channel must be one of {list(CHANNELS)} and text 1-{DEMO_MAX_TEXT} characters"}))
         trace_id = uuid.uuid4().hex
+        text = pii.mask(text)
         event = {"tenant_id": DEMO_TENANT, "conversation_id": f"demo-{trace_id[:12]}", "channel": channel,
                  "text": text, "trace_id": trace_id}
         with get_pool().connection() as db:
             enqueue(db, [json.dumps(event)])
             flags = would_flag(db, text)
         log("demo_accepted", tenant_id=DEMO_TENANT, channel=channel, trace_id=trace_id, flags=len(flags))
-        self.reply(202, json.dumps({"accepted": 1, "trace_id": trace_id, "would_flag": flags}))
+        self.reply(202, json.dumps({"accepted": 1, "trace_id": trace_id, "would_flag": flags, "stored_as": text}))
 
 
 def serve(port=8080):

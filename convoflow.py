@@ -12,6 +12,7 @@ import sys
 import time
 import uuid
 
+import pii
 import psycopg
 from psycopg import sql
 
@@ -27,10 +28,11 @@ RETRY_BASE_SECONDS = 2
 DEAD_LETTER_DAYS = 90
 FAIR_CLAIMS = os.environ.get("CONVOFLOW_FAIR", "1") == "1"
 
-# Rules run in the database so a scan never pulls messages into Python.
+# Rules run in the database so a scan never pulls messages into Python. Card numbers
+# and SSNs are masked before storage (see pii.py), so those rules match the tokens.
 RULES = (
-    ("card_number_exposed", "critical", r"\m\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\M"),
-    ("ssn_exposed", "critical", r"\m\d{3}-\d{2}-\d{4}\M"),
+    ("card_number_exposed", "critical", pii.CARD_TOKEN),
+    ("ssn_exposed", "critical", pii.SSN_TOKEN),
     ("denied_being_ai", "high", r"(?i)i am (a )?(real )?human"),
 )
 
@@ -77,6 +79,7 @@ def add_tenants(limits):
 def enqueue(db, payloads):
     with db.cursor() as cur, cur.copy("COPY inbox (tenant_hint, payload) FROM STDIN") as copy:
         for payload in payloads:
+            payload = pii.mask(payload)
             copy.write_row((tenant_hint(payload), payload))
     db.commit()
 
@@ -227,6 +230,7 @@ def store_batch(db, worker_id, claimed, before_commit):
             if reason:
                 dead.append((raw, reason))
             else:
+                e["text"] = pii.mask(e["text"])
                 by_tenant.setdefault(e["tenant_id"], []).append((
                     e["tenant_id"], event_key(e), e["conversation_id"],
                     e["channel"], e["text"], enqueued_at, e.get("trace_id"), raw,

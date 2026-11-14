@@ -113,8 +113,9 @@ def test_scanner_finds_violations_with_evidence_once(db):
     enqueue(db, [event(text="Your card 4111 1111 1111 1111 is on file."), event(conv="c2", text="Fine.")])
     process_batch(db, "w")
     assert scan(lag_seconds=0) == (2, 1)
-    assert admin("SELECT rule, severity, evidence FROM findings") == [
-        ("card_number_exposed", "critical", "4111 1111 1111 1111")]
+    [(rule, severity, evidence)] = admin("SELECT rule, severity, evidence FROM findings")
+    assert (rule, severity) == ("card_number_exposed", "critical")
+    assert evidence.startswith("[card ****1111 fp:") and "4111 1111" not in evidence
     assert scan(lag_seconds=0)[1] == 0
 
 
