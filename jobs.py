@@ -20,6 +20,7 @@ import urllib.request
 import psycopg
 
 import alerts
+import llm_rules
 import backup as backups
 import secretbox
 from api import firing, hash_key, measure
@@ -111,6 +112,7 @@ def scheduler(tick=60, hour=3600):
 def hourly():
     scanned, found = scan()
     log("scan_finished", scanned=scanned, findings=found)
+    llm_rules.scan()
     alerts.notify()
     purge()
     if BACKUP_DIR:

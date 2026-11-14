@@ -32,7 +32,7 @@ def test_migrate_twice_keeps_existing_data(db):
     migrate()
     with psycopg.connect(ADMIN_DSN) as conn:
         assert conn.execute("SELECT count(*) FROM messages").fetchone() == (1,)
-        assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone() == (5,)
+        assert conn.execute("SELECT count(*) FROM schema_migrations").fetchone() == (6,)
 
 
 def test_retention_deletes_only_expired_data(db):

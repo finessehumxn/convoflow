@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY convoflow.py adapters.py alerts.py api.py backup.py jobs.py pii.py secretbox.py tracing.py webhooks.py page.html ./
+COPY convoflow.py adapters.py alerts.py api.py backup.py jobs.py llm_rules.py pii.py secretbox.py tracing.py webhooks.py page.html ./
 COPY migrations ./migrations
 USER nobody
 # ECS passes its own command. Elsewhere (Railway) CONVOFLOW_ROLE picks the process.
