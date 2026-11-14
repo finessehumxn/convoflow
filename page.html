@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>convoflow</title>
+<meta name="description" content="Multi-tenant ingestion for voice, chat, email and SMS with dedupe, dead letters, quotas and compliance scanning. Live demo.">
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--ink:#16181d;--muted:#5d6370;--line:#e3e4e8;--accent:#3b5bdb;--ok:#2b8a3e;--warn:#c92a2a;--chip:#eef1fb;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--ink:#e8eaee;--muted:#9aa1ad;--line:#2a2f3a;--accent:#7c95ff;--ok:#51cf66;--warn:#ff6b6b;--chip:#1f2533}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:960px;margin:0 auto;padding:40px 16px 64px}
+h1{font-size:2.1rem;margin:0 0 6px;letter-spacing:-.02em}
+h2{font-size:1.15rem;margin:0 0 14px}
+p{margin:0 0 12px}
+a{color:var(--accent)}
+.lede{color:var(--muted);font-size:1.08rem;max-width:680px}
+.links{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 28px}
+.btn{display:inline-block;padding:9px 16px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);text-decoration:none;font-weight:600;font-size:.95rem;cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px;margin-bottom:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.stat{border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.stat b{display:block;font-size:1.5rem;font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:.85rem}
+.status{display:inline-flex;align-items:center;gap:8px;font-weight:600;margin-bottom:14px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--muted)}
+.dot.ok{background:var(--ok)}.dot.bad{background:var(--warn)}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+select,textarea{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+textarea{width:100%;min-height:86px;resize:vertical}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 12px}
+.chip{background:var(--chip);border:0;border-radius:999px;padding:5px 12px;font-size:.85rem;color:var(--ink);cursor:pointer}
+.result{font-family:var(--mono);font-size:.85rem;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-all;margin-top:12px;display:none}
+.flag{color:var(--warn);font-weight:700}
+table{width:100%;border-collapse:collapse;font-size:.93rem}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+ul{margin:0;padding-left:20px}li{margin-bottom:6px}
+code{font-family:var(--mono);font-size:.88em;background:var(--chip);padding:1px 5px;border-radius:4px}
+.note{color:var(--muted);font-size:.9rem}
+.scroll{overflow-x:auto}
+footer{color:var(--muted);font-size:.88rem;margin-top:28px}
+</style>
+</head>
+<body>
+<main>
+  <h1>convoflow</h1>
+  <p class="lede">Multi-tenant ingestion for voice, chat, email and SMS. Every message is deduplicated, held to its tenant's quota, kept apart from other tenants by row level security, and scanned for compliance problems like exposed card numbers.</p>
+  <div class="links">
+    <a class="btn primary" href="#try">Send a test message</a>
+    <a class="btn" href="https://github.com/finessehumxn/convoflow">Source on GitHub</a>
+    <a class="btn" href="/metrics">Raw metrics</a>
+  </div>
+
+  <section class="card" aria-live="polite">
+    <h2>Live pipeline</h2>
+    <div class="status"><span class="dot" id="dot"></span><span id="status">Loading</span></div>
+    <div class="grid">
+      <div class="stat"><b id="stored">-</b><span>messages stored</span></div>
+      <div class="stat"><b id="dups">-</b><span>duplicates dropped</span></div>
+      <div class="stat"><b id="dead">-</b><span>dead letters</span></div>
+      <div class="stat"><b id="depth">-</b><span>waiting in queue</span></div>
+      <div class="stat"><b id="lag">-</b><span>queue lag</span></div>
+    </div>
+    <p class="note" style="margin-top:12px">Refreshes every 5 seconds from <code>/stats</code>.</p>
+  </section>
+
+  <section class="card" id="try">
+    <h2>Try it</h2>
+    <p>Pick a channel and send a message. It goes through the real queue and worker. The response shows which compliance rules it would trip.</p>
+    <div class="chips">
+      <button class="chip" data-t="Sure, my card is 4111 1111 1111 1111, can you update it?">Card number</button>
+      <button class="chip" data-t="My SSN is 123-45-6789 if you need it.">SSN</button>
+      <button class="chip" data-t="Don't worry, I am a real human, not a bot.">AI says it is human</button>
+      <button class="chip" data-t="Thanks, my order arrived today.">Clean message</button>
+    </div>
+    <div class="row">
+      <label for="channel" class="note" style="align-self:center">Channel</label>
+      <select id="channel"><option>chat</option><option>sms</option><option>email</option><option>voice</option></select>
+    </div>
+    <label for="text" class="note">Message</label>
+    <textarea id="text" maxlength="500">Sure, my card is 4111 1111 1111 1111, can you update it?</textarea>
+    <div class="row" style="margin-top:10px"><button class="btn primary" id="send">Send</button></div>
+    <div class="result" id="result"></div>
+    <p class="note" style="margin-top:10px">Demo messages go to a sandbox tenant with its own daily limit and a cap of 10 sends a minute. Don't paste real personal data.</p>
+  </section>
+
+  <section class="card">
+    <h2>24-hour soak test</h2>
+    <p>15 items a second across 20 tenants for 24 hours, with 3 workers killed mid-run. Simulated traffic on one machine.</p>
+    <div class="scroll"><table>
+      <tr><th>Measure</th><th>Result</th></tr>
+      <tr><td>Items produced</td><td class="n">1,295,999</td></tr>
+      <tr><td>Stored / duplicates / dead letters</td><td class="n">1,240,513 / 25,613 / 29,873</td></tr>
+      <tr><td>Every item accounted for</td><td>Yes, none lost when workers died</td></tr>
+      <tr><td>Planted violations found</td><td class="n">6,112 of 6,112</td></tr>
+      <tr><td>Latency p50 / p95 / p99</td><td class="n">0.088s / 0.186s / 0.200s</td></tr>
+      <tr><td>Capped tenant</td><td>Held to 5,000 on each of the 2 days the run crossed</td></tr>
+    </table></div>
+    <p class="note" style="margin-top:12px">The soak first reported the capped tenant as over its limit. The quota had held, but the check compared two days against a one-day limit. Investigating it exposed a real bug: workers used their own clocks for the quota day. The day now comes from the database in UTC, with a test that fails on the old code.</p>
+  </section>
+
+  <section class="card">
+    <h2>Noisy neighbor</h2>
+    <p>One tenant floods 300,000 items while another sends 300.</p>
+    <div class="scroll"><table>
+      <tr><th>Claiming</th><th>Quiet tenant p50</th><th>Quiet tenant p95</th></tr>
+      <tr><td>Oldest first</td><td class="n">3.77s</td><td class="n">4.65s</td></tr>
+      <tr><td>Fair share per tenant</td><td class="n">0.03s</td><td class="n">0.05s</td></tr>
+    </table></div>
+  </section>
+
+  <section class="card">
+    <h2>How it works</h2>
+    <ul>
+      <li>Workers claim rows with <code>FOR UPDATE SKIP LOCKED</code> and write results in the same transaction, so a crash puts the batch back.</li>
+      <li>Content-hash keys per tenant make replays safe.</li>
+      <li>Row level security keeps tenants apart. Workers connect as a role that cannot bypass it.</li>
+      <li>A batch the database rejects is retried row by row with backoff, so one bad row cannot block the rest. After 3 tries it goes to dead letters, which can be replayed.</li>
+      <li>The scanner runs its rules inside Postgres every hour and stores evidence for each finding.</li>
+      <li>Terraform for AWS (ECS Fargate on ARM, RDS, load balancer, autoscaling, CloudWatch alarms, GitHub OIDC deploys) is written and validated. This demo runs on Railway.</li>
+    </ul>
+  </section>
+
+  <footer>Python, Postgres, standard-library HTTP. 37 tests. <a href="https://finessehumxn.com">finessehumxn.com</a></footer>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => Number(n).toLocaleString();
+async function refresh() {
+  try {
+    const r = await fetch('/stats', {cache: 'no-store'});
+    const d = await r.json(), m = d.metrics;
+    $('stored').textContent = fmt(m.stored_total);
+    $('dups').textContent = fmt(m.duplicates_total);
+    $('dead').textContent = fmt(m.dead_total);
+    $('depth').textContent = fmt(m.queue_depth);
+    $('lag').textContent = Number(m.queue_lag_seconds).toFixed(1) + 's';
+    const ok = d.alerts.length === 0;
+    $('dot').className = 'dot ' + (ok ? 'ok' : 'bad');
+    $('status').textContent = ok ? 'Healthy, no alerts firing' : 'Alert firing: ' + d.alerts.join(', ');
+    if (!d.demo) $('try').style.display = 'none';
+  } catch (e) {
+    $('dot').className = 'dot bad';
+    $('status').textContent = 'Could not reach the pipeline';
+  }
+}
+document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => { $('text').value = c.dataset.t; }));
+$('send').addEventListener('click', async () => {
+  const out = $('result');
+  out.style.display = 'block';
+  out.textContent = 'Sending...';
+  try {
+    const r = await fetch('/demo', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({channel: $('channel').value, text: $('text').value})});
+    const d = await r.json();
+    if (!r.ok) { out.textContent = 'Error ' + r.status + ': ' + (d.error || 'failed'); return; }
+    const flags = d.would_flag.length
+      ? d.would_flag.map(f => f.rule + ' (' + f.severity + ')').join(', ')
+      : 'none';
+    out.innerHTML = '';
+    out.append('Accepted. Trace id ' + d.trace_id + '\nWould flag: ');
+    const span = document.createElement('span');
+    if (d.would_flag.length) span.className = 'flag';
+    span.textContent = flags;
+    out.append(span, '\nWatch "messages stored" go up in a moment.');
+    setTimeout(refresh, 1500);
+  } catch (e) { out.textContent = 'Could not reach the pipeline'; }
+});
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
