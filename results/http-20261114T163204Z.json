@@ -1,0 +1,27 @@
+{
+  "target": "https://api-production-0f7cc354.up.railway.app",
+  "run_id": "cf232c79",
+  "events_accepted": 150000,
+  "requests": 15000,
+  "status_codes": {
+    "202": 15000
+  },
+  "concurrency": 8,
+  "events_per_request": 10,
+  "send_seconds": 90.2,
+  "drain_seconds": 90.3,
+  "events_per_second_end_to_end": 1661.6,
+  "http_latency_seconds": {
+    "p50": 0.043,
+    "p95": 0.055,
+    "p99": 0.189
+  },
+  "stored": 150000.0,
+  "duplicates": 0.0,
+  "dead": 0.0,
+  "checks": {
+    "every_event_accounted_for": true,
+    "queue_drained": true
+  },
+  "note": "All 3 worker replicas were replaced mid-run by a Railway redeploy: old ones logged worker_stopped at 16:31:03-05 UTC and new ones worker_started at 16:30:57-59 UTC, inside the run (16:30:33 to 16:32:04 UTC). Railway sends SIGTERM, so this is a graceful replacement, not a hard kill. Traffic came over HTTPS from one laptop in California."
+}
