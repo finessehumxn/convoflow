@@ -116,8 +116,8 @@ Fair claiming costs throughput: the 1M burst fell from about 47,800 items a seco
 
 ## Status
 
-- Live on Railway with two services: `api` and a `worker-with-scan` (`CONVOFLOW_ROLE` picks the process; ECS passes its own commands).
+- Live on Railway with two services: `api` and a `worker-with-scan` (`CONVOFLOW_ROLE` picks the process; ECS passes its own commands). The Railway setup is code in `.railway/railway.py` (secrets stay in Railway via `preserve()`); preview with `railway config plan`. Both services have deploy health checks, so the old version serves until the new one answers `/health`: 207 of 207 requests got a 200 during a live redeploy. New Railway variables must be added to that file as `preserve()` or the next `railway config apply` deletes them.
 - On AWS only the ECR repository and an ARM64 image exist. The full `terraform apply` has not been run.
 - Workers have run as 3 replicas on separate machines against one Postgres. Postgres itself is a single instance; a standby exists only with `production=true` on AWS.
-- Email has no signed adapter yet (SendGrid Inbound Parse has no signature, so it would need a secret URL or IP allowlist). Voice takes text segments; there is no speech-to-text.
+- Email arrives through Mailgun (signed). SendGrid Inbound Parse is not supported because it has no signature. Voice takes text segments or Twilio transcriptions; convoflow does no speech-to-text itself.
 - The deploy workflow has never run. See `RUNBOOK.md`.
