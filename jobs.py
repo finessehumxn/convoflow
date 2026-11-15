@@ -109,16 +109,33 @@ def scheduler(tick=60, hour=3600):
         time.sleep(tick)
 
 
-def hourly():
-    scanned, found = scan()
-    log("scan_finished", scanned=scanned, findings=found)
-    llm_rules.scan()
-    alerts.notify()
-    purge()
+def _daily_backup():
     if BACKUP_DIR:
         last = backups.latest(BACKUP_DIR)
         if not last or time.time() - os.path.getmtime(last) > 23 * 3600:
             backups.backup(BACKUP_DIR)
+
+
+def _regex_scan():
+    scanned, found = scan()
+    log("scan_finished", scanned=scanned, findings=found)
+
+
+HOURLY_STEPS = [("scan", _regex_scan), ("llm_scan", lambda: llm_rules.scan()),
+                ("notify", lambda: alerts.notify()), ("purge", lambda: purge()), ("backup", _daily_backup)]
+
+
+def hourly():
+    """Runs each step on its own: one failing step (a model outage, a full disk) must not
+    stop the others. Returns the names of the steps that failed."""
+    failed = []
+    for name, step in HOURLY_STEPS:
+        try:
+            step()
+        except Exception as err:  # noqa: BLE001 - logged and retried next hour
+            log("hourly_step_failed", step=name, error=f"{type(err).__name__}: {err}")
+            failed.append(name)
+    return failed
 
 
 def issue_key(tenant_id, daily_limit=1_000_000, label="", key=None):

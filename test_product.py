@@ -14,6 +14,7 @@ import alerts
 import api
 import backup
 import secretbox
+import jobs
 import webhooks
 from convoflow import ADMIN_DSN, APP_DSN, add_tenants, enqueue, migrate, process_batch, reset, scan
 from jobs import delete_tenant, issue_key, revoke_key, rotate_secrets, set_alert, set_webhook, key_id
@@ -300,3 +301,46 @@ def test_scheduler_survives_a_database_error_and_tries_again(monkeypatch):
     with pytest.raises(SystemExit):
         jobs.scheduler(tick=0, hour=0)
     assert len(calls) == 2
+
+
+def test_one_failing_hourly_step_does_not_stop_the_others(monkeypatch):
+    ran = []
+
+    def boom():
+        raise RuntimeError("model outage")
+
+    steps = [("scan", lambda: ran.append("scan")), ("llm_scan", boom),
+             ("notify", lambda: ran.append("notify")), ("purge", lambda: ran.append("purge"))]
+    monkeypatch.setattr(jobs, "HOURLY_STEPS", steps)
+    assert jobs.hourly() == ["llm_scan"]
+    assert ran == ["scan", "notify", "purge"]
+
+
+def test_model_rules_switched_on_without_a_key_skip_instead_of_crashing(monkeypatch):
+    import llm_rules
+
+    monkeypatch.setattr(llm_rules, "ENABLED", True)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert llm_rules.scan() == (0, 0)
+
+
+def test_worker_health_reports_a_stalled_loop():
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    import convoflow
+
+    server = convoflow.serve_health(0, max_age=60)
+    url = f"http://127.0.0.1:{server.server_address[1]}/health"
+    try:
+        convoflow._last_batch[0] = time.monotonic()
+        assert _json.loads(urllib.request.urlopen(url).read())["status"] == "ok"
+        convoflow._last_batch[0] = time.monotonic() - 120
+        try:
+            urllib.request.urlopen(url)
+            raise AssertionError("expected 503")
+        except urllib.error.HTTPError as err:
+            assert err.code == 503
+    finally:
+        server.shutdown()

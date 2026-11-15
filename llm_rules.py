@@ -93,6 +93,9 @@ def scan(client=None):
     """Classifies up to MAX_PER_RUN unchecked messages. Returns (checked, findings)."""
     if not ENABLED and client is None:
         return 0, 0
+    if client is None and not os.environ.get("ANTHROPIC_API_KEY"):
+        log("llm_rules_skipped", reason="CONVOFLOW_LLM_RULES=1 but ANTHROPIC_API_KEY is not set")
+        return 0, 0
     client = client or _client()
     checked = found = 0
     with psycopg.connect(ADMIN_DSN) as db:

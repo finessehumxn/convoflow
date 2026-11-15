@@ -9,6 +9,7 @@ import os
 import random
 import signal
 import sys
+import threading
 import time
 import uuid
 
@@ -314,8 +315,37 @@ def purge():
     return messages, findings, dead
 
 
+_last_batch = [time.monotonic()]
+
+
+def serve_health(port, max_age=60):
+    """GET /health for the worker: 200 while the claim loop has completed a round in the
+    last max_age seconds, 503 otherwise. Lets the host hold a deploy until the new worker works."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            age = time.monotonic() - _last_batch[0]
+            ok = self.path == "/health" and age < max_age
+            body = json.dumps({"status": "ok" if ok else "stale", "seconds_since_last_round": round(age, 1)}).encode()
+            self.send_response(200 if ok else 503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("", port), Health)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 def run_worker(idle_exit=None):
     worker_id = uuid.uuid4().hex[:8]
+    if os.environ.get("CONVOFLOW_HEALTH_PORT"):
+        serve_health(int(os.environ["CONVOFLOW_HEALTH_PORT"]))
     stop = []
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     log("worker_started", worker_id=worker_id)
@@ -333,6 +363,7 @@ def run_worker(idle_exit=None):
         except psycopg.errors.DeadlockDetected:
             db.rollback()
             continue
+        _last_batch[0] = time.monotonic()
         if claimed:
             idle_since = time.monotonic()
         elif idle_exit and time.monotonic() - idle_since > idle_exit:
